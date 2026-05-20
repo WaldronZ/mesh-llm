@@ -1,5 +1,6 @@
 mod cli;
 mod report;
+mod router_validation;
 mod runner;
 mod support;
 
@@ -8,6 +9,7 @@ use clap::Parser;
 
 use crate::{
     cli::{Cli, CommandKind},
+    router_validation::router_validation,
     runner::{chain, dtype_matrix, single_step, split_scan, state_handoff},
 };
 
@@ -18,5 +20,6 @@ fn main() -> Result<()> {
         CommandKind::SplitScan(args) => split_scan(args),
         CommandKind::DtypeMatrix(args) => dtype_matrix(args),
         CommandKind::StateHandoff(args) => state_handoff(args),
+        CommandKind::RouterValidation(args) => router_validation(args),
     }
 }

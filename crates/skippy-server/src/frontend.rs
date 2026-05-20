@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    env,
     future::Future,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
@@ -31,14 +32,16 @@ use openai_frontend::{
     ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiErrorKind, OpenAiHookPolicy,
     OpenAiRequestContext, OpenAiResult, PrefillHookSignals, Usage,
 };
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skippy_metrics::attr as attr_key;
 use skippy_protocol::binary::{
-    recv_ready, recv_reply, state_flags, write_stage_message, StageLogitBias as WireLogitBias,
-    StageReply, StageReplyStats, StageSamplingConfig as WireSamplingConfig, StageStateHeader,
-    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, LLAMA_TOKEN_NULL,
-    MAX_STAGE_LOGIT_BIAS,
+    read_stage_message_timed, recv_ready, recv_reply, state_flags, write_stage_message,
+    write_stage_message_timed, StageLogitBias as WireLogitBias, StageReply, StageReplyStats,
+    StageSamplingConfig as WireSamplingConfig, StageStateHeader, StageWireMessage,
+    WireActivationDType, WireMessageKind, WireReplyKind, LLAMA_TOKEN_NULL, MAX_STAGE_LOGIT_BIAS,
+    STAGE_STATE_VERSION,
 };
 use skippy_protocol::{MessageBase, StageConfig, StageTopology, SCHEMA_VERSION};
 use skippy_runtime::{
@@ -58,7 +61,7 @@ use crate::{
         connect_binary_downstream, forwarded_stage_message, forwarded_stage_message_timed,
         run_binary_stage_message, write_stage_message_conditioned, WireCondition,
     },
-    cli::ServeOpenAiArgs,
+    cli::{PdRouterValidationFault, PdServingMvpTestFault, ServeOpenAiArgs},
     config::{load_json, validate_config},
     kv_integration::KvStageIntegration,
     runtime_state::{load_runtime, RuntimeSessionStats, RuntimeState},
@@ -71,6 +74,9 @@ mod embedded_execution;
 mod embedded_generation;
 mod generation_flow;
 mod local_generation;
+#[cfg(test)]
+mod pd_hardening_tests;
+mod pd_router_validation;
 mod prefill;
 mod prefix_cache;
 mod prompting;
@@ -107,15 +113,25 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
     if args.generation_concurrency == 0 {
         bail!("--generation-concurrency must be greater than zero");
     }
+    let pd_mode = pd_serving_mode_from_args(&args)?;
+    validate_pd_serving_backend_constraints(&args, pd_mode)?;
 
     let runtime = load_runtime(&config)?.ok_or_else(|| {
         anyhow!("serve-openai requires a stage config with model_path for tokenization and decode")
     })?;
-    let model_id = ModelId::new(args.model_id.unwrap_or_else(|| config.model_id.clone()))
-        .map_err(|error| anyhow!("invalid OpenAI model id: {error}"))?
-        .into_string();
-    let mode = match args.first_stage_addr {
-        Some(first_stage_addr) => OpenAiBackendMode::BinaryChain {
+    let model_id = ModelId::new(
+        args.model_id
+            .clone()
+            .unwrap_or_else(|| config.model_id.clone()),
+    )
+    .map_err(|error| anyhow!("invalid OpenAI model id: {error}"))?
+    .into_string();
+    let mode = if let Some(pd_mode) = pd_mode {
+        OpenAiBackendMode::PdRouterValidation(pd_router_validation_config_from_args(
+            &args, &model_id, pd_mode,
+        )?)
+    } else if let Some(first_stage_addr) = args.first_stage_addr {
+        OpenAiBackendMode::BinaryChain {
             first_stage_addr,
             wire_dtype: parse_wire_dtype(&args.activation_wire_dtype)?,
             prefill_chunk_policy: PrefillChunkPolicy::parse(PrefillChunkPolicyArgs {
@@ -129,10 +145,13 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
                 policy_arg: "--prefill-chunk-policy",
             })?,
             startup_timeout_secs: args.startup_timeout_secs,
-        },
-        None => OpenAiBackendMode::LocalRuntime,
+        }
+    } else {
+        OpenAiBackendMode::LocalRuntime
     };
     let mode_label = mode.label();
+    let generation_queue_limit =
+        generation_queue_limit_for_pd_mode(pd_mode, args.generation_concurrency);
     let telemetry = Telemetry::new(
         args.metrics_otlp_grpc,
         args.telemetry_queue_capacity,
@@ -140,7 +159,13 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         args.telemetry_level,
     );
     telemetry.emit("stage.openai_server_start", lifecycle_attrs(&config));
-    if matches!(&mode, OpenAiBackendMode::LocalRuntime) {
+    if let OpenAiBackendMode::PdRouterValidation(pd_config) = &mode {
+        emit_pd_serving_status(&telemetry, &config, pd_config, args.generation_concurrency);
+    }
+    if matches!(
+        &mode,
+        OpenAiBackendMode::LocalRuntime | OpenAiBackendMode::PdRouterValidation(_)
+    ) {
         ensure_generation_concurrency_fits_lanes(
             args.generation_concurrency,
             config.lane_count,
@@ -170,7 +195,7 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
         generation_queue_depth: Arc::new(AtomicUsize::new(0)),
-        generation_queue_limit: args.generation_concurrency,
+        generation_queue_limit,
         hook_policy: None,
         kv,
     });
@@ -429,6 +454,57 @@ fn reserve_generation_queue(
     }
 }
 
+fn generation_queue_limit_for_pd_mode(
+    pd_mode: Option<PdServingMode>,
+    generation_concurrency: usize,
+) -> usize {
+    if matches!(pd_mode, Some(PdServingMode::Mvp)) {
+        0
+    } else {
+        generation_concurrency
+    }
+}
+
+fn pd_serving_mode_from_args(args: &ServeOpenAiArgs) -> Result<Option<PdServingMode>> {
+    if args.pd_router_validation && args.pd_serving_mvp {
+        bail!("--pd-router-validation cannot be combined with --pd-serving-mvp");
+    }
+    if !args.pd_serving_mvp
+        && (args.pd_serving_mvp_allow_test_faults
+            || args.pd_serving_mvp_test_fault != PdServingMvpTestFault::None)
+    {
+        bail!("--pd-serving-mvp-test-fault requires --pd-serving-mvp");
+    }
+    Ok(if args.pd_router_validation {
+        Some(PdServingMode::Validation)
+    } else if args.pd_serving_mvp {
+        Some(PdServingMode::Mvp)
+    } else {
+        None
+    })
+}
+
+fn validate_pd_serving_backend_constraints(
+    args: &ServeOpenAiArgs,
+    pd_mode: Option<PdServingMode>,
+) -> Result<()> {
+    if let Some(mode) = pd_mode {
+        if args.first_stage_addr.is_some() {
+            bail!(
+                "{} cannot be combined with --first-stage-addr",
+                mode.flag_name()
+            );
+        }
+        if args.generation_concurrency != 1 {
+            bail!(
+                "{} requires --generation-concurrency 1 for the scoped single-request lane",
+                mode.flag_name()
+            );
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GenerationTokenLimit {
     Explicit(u32),
@@ -595,6 +671,340 @@ enum OpenAiBackendMode {
         prefill_reply_credit_limit: usize,
         lane_pool: Option<Arc<PersistentStageLanePool>>,
     },
+    PdRouterValidation(PdRouterValidationConfig),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PdServingMode {
+    Validation,
+    Mvp,
+}
+
+impl PdServingMode {
+    fn flag_name(self) -> &'static str {
+        match self {
+            Self::Validation => "--pd-router-validation",
+            Self::Mvp => "--pd-serving-mvp",
+        }
+    }
+
+    fn backend_label(self) -> &'static str {
+        match self {
+            Self::Validation => "pd-router-validation",
+            Self::Mvp => "pd-disaggregated-serving-mvp",
+        }
+    }
+
+    fn telemetry_event(self) -> &'static str {
+        match self {
+            Self::Validation => "stage.pd_router_validation",
+            Self::Mvp => "stage.pd_serving_mvp",
+        }
+    }
+
+    fn connect_event(self) -> &'static str {
+        match self {
+            Self::Validation => "stage.pd_router_validation_connect",
+            Self::Mvp => "stage.pd_serving_mvp_connect",
+        }
+    }
+
+    fn result_attr(self) -> &'static str {
+        match self {
+            Self::Validation => "pd.validation.result",
+            Self::Mvp => "pd.mvp.result",
+        }
+    }
+
+    fn fallback_attr(self) -> &'static str {
+        match self {
+            Self::Validation => "pd.validation.fallback_reason",
+            Self::Mvp => "pd.mvp.fallback_reason",
+        }
+    }
+
+    fn failure_phase_attr(self) -> &'static str {
+        match self {
+            Self::Validation => "pd.validation.failure_phase",
+            Self::Mvp => "pd.mvp.failure_phase",
+        }
+    }
+
+    fn failure_reason_attr(self) -> &'static str {
+        match self {
+            Self::Validation => "pd.validation.failure_reason",
+            Self::Mvp => "pd.mvp.failure_reason",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PdRouterValidationConfig {
+    mode: PdServingMode,
+    prefill_addr: String,
+    decode_addr: String,
+    wire_dtype: WireActivationDType,
+    startup_timeout_secs: u64,
+    model_id: String,
+    expected_artifact_sha256: String,
+    expected_tokenizer_hash: String,
+    expected_chat_template_hash: String,
+    source_node_id: String,
+    target_node_id: String,
+    fault_injection: PdRouterValidationFault,
+    mvp_test_fault: PdServingMvpTestFault,
+}
+
+impl PdRouterValidationConfig {
+    fn inject_manifest_mismatch(&self) -> bool {
+        self.fault_injection == PdRouterValidationFault::ManifestMismatch
+            || (self.mode == PdServingMode::Mvp
+                && self.mvp_test_fault == PdServingMvpTestFault::ManifestMismatch)
+    }
+
+    fn inject_pre_content_failure(&self) -> bool {
+        self.fault_injection == PdRouterValidationFault::PreTokenFailure
+            || (self.mode == PdServingMode::Mvp
+                && self.mvp_test_fault == PdServingMvpTestFault::PreContentFailure)
+    }
+
+    fn inject_post_content_failure(&self) -> bool {
+        self.fault_injection == PdRouterValidationFault::PostContentTokenFailure
+            || (self.mode == PdServingMode::Mvp
+                && self.mvp_test_fault == PdServingMvpTestFault::PostContentFailure)
+    }
+
+    fn configured_fault_label(&self) -> &'static str {
+        if self.mode == PdServingMode::Mvp {
+            self.mvp_test_fault.as_label()
+        } else {
+            self.fault_injection.as_label()
+        }
+    }
+}
+
+fn pd_router_validation_config_from_args(
+    args: &ServeOpenAiArgs,
+    model_id: &str,
+    mode: PdServingMode,
+) -> Result<PdRouterValidationConfig> {
+    let required = |value: &Option<String>, flag: &str| {
+        value
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .ok_or_else(|| anyhow!("{} requires {flag}", mode.flag_name()))
+    };
+    if mode == PdServingMode::Mvp {
+        if args.pd_fault_injection != PdRouterValidationFault::None {
+            bail!("--pd-fault-injection is validation-only and cannot be combined with --pd-serving-mvp");
+        }
+        if args.pd_serving_mvp_test_fault != PdServingMvpTestFault::None
+            && !pd_mvp_test_faults_allowed(args)
+        {
+            bail!("--pd-serving-mvp-test-fault requires --pd-serving-mvp-allow-test-faults or SKIPPY_ALLOW_PD_MVP_TEST_FAULTS=1");
+        }
+        if args.pd_source_node_id == "pgx-prefill-validation"
+            || args.pd_target_node_id == "mac-decode-validation"
+        {
+            bail!("--pd-serving-mvp requires explicit --pd-source-node-id and --pd-target-node-id");
+        }
+    } else if args.pd_serving_mvp_allow_test_faults
+        || args.pd_serving_mvp_test_fault != PdServingMvpTestFault::None
+    {
+        bail!("--pd-serving-mvp-test-fault requires --pd-serving-mvp");
+    }
+    let config = PdRouterValidationConfig {
+        mode,
+        prefill_addr: required(&args.pd_prefill_addr, "--pd-prefill-addr")?,
+        decode_addr: required(&args.pd_decode_addr, "--pd-decode-addr")?,
+        wire_dtype: parse_wire_dtype(&args.activation_wire_dtype)?,
+        startup_timeout_secs: args.startup_timeout_secs,
+        model_id: model_id.to_string(),
+        expected_artifact_sha256: required(
+            &args.pd_expected_artifact_sha256,
+            "--pd-expected-artifact-sha256",
+        )?,
+        expected_tokenizer_hash: required(
+            &args.pd_expected_tokenizer_hash,
+            "--pd-expected-tokenizer-hash",
+        )?,
+        expected_chat_template_hash: required(
+            &args.pd_expected_chat_template_hash,
+            "--pd-expected-chat-template-hash",
+        )?,
+        source_node_id: sanitize_pd_node_id(&args.pd_source_node_id, "pd source node id")?,
+        target_node_id: sanitize_pd_node_id(&args.pd_target_node_id, "pd target node id")?,
+        fault_injection: args.pd_fault_injection,
+        mvp_test_fault: if mode == PdServingMode::Mvp {
+            args.pd_serving_mvp_test_fault
+        } else {
+            PdServingMvpTestFault::None
+        },
+    };
+    validate_pd_hash(
+        &config.expected_artifact_sha256,
+        "--pd-expected-artifact-sha256",
+    )?;
+    validate_pd_hash(
+        &config.expected_tokenizer_hash,
+        "--pd-expected-tokenizer-hash",
+    )?;
+    validate_pd_hash(
+        &config.expected_chat_template_hash,
+        "--pd-expected-chat-template-hash",
+    )?;
+    Ok(config)
+}
+
+fn pd_mvp_test_faults_allowed(args: &ServeOpenAiArgs) -> bool {
+    args.pd_serving_mvp_allow_test_faults
+        || matches!(
+            env::var("SKIPPY_ALLOW_PD_MVP_TEST_FAULTS").as_deref(),
+            Ok("1")
+        )
+}
+
+fn validate_pd_hash(value: &str, flag: &str) -> Result<()> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("{flag} must be a 64-character sha256 hex string");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct PdServingStatus {
+    enabled: bool,
+    available: bool,
+    mode: &'static str,
+    coordinator_role: &'static str,
+    prefill_worker_role: &'static str,
+    decode_worker_role: &'static str,
+    prefill_worker_health: &'static str,
+    decode_worker_health: &'static str,
+    compatibility_state: &'static str,
+    allowed_model: String,
+    kv_format_version: &'static str,
+    inflight_limit: usize,
+    inflight_current: usize,
+    capacity_state: &'static str,
+    current_state: &'static str,
+    last_result: Option<&'static str>,
+    last_fallback_reason: Option<&'static str>,
+    last_failure_phase: Option<&'static str>,
+}
+
+fn pd_serving_status_for_start(
+    config: &PdRouterValidationConfig,
+    inflight_limit: usize,
+) -> PdServingStatus {
+    PdServingStatus {
+        enabled: true,
+        available: true,
+        mode: config.mode.backend_label(),
+        coordinator_role: "mac-coordinator-router-decode",
+        prefill_worker_role: config.prefill_worker_telemetry_label(),
+        decode_worker_role: config.decode_worker_telemetry_label(),
+        prefill_worker_health: "configured",
+        decode_worker_health: "configured",
+        compatibility_state: "configured-identities",
+        allowed_model: config.model_id.clone(),
+        kv_format_version: "native-full-state/1",
+        inflight_limit,
+        inflight_current: 0,
+        capacity_state: "open",
+        current_state: "idle",
+        last_result: None,
+        last_fallback_reason: None,
+        last_failure_phase: None,
+    }
+}
+
+fn emit_pd_serving_status(
+    telemetry: &Telemetry,
+    stage_config: &StageConfig,
+    config: &PdRouterValidationConfig,
+    inflight_limit: usize,
+) {
+    let status = pd_serving_status_for_start(config, inflight_limit);
+    let mut attrs = lifecycle_attrs(stage_config);
+    attrs.insert("pd.enabled".to_string(), json!(status.enabled));
+    attrs.insert("pd.available".to_string(), json!(status.available));
+    attrs.insert("pd.mode".to_string(), json!(status.mode));
+    attrs.insert(
+        "pd.coordinator_role".to_string(),
+        json!(status.coordinator_role),
+    );
+    attrs.insert(
+        "pd.prefill_worker_role".to_string(),
+        json!(status.prefill_worker_role),
+    );
+    attrs.insert(
+        "pd.decode_worker_role".to_string(),
+        json!(status.decode_worker_role),
+    );
+    attrs.insert(
+        "pd.prefill_worker_health".to_string(),
+        json!(status.prefill_worker_health),
+    );
+    attrs.insert(
+        "pd.decode_worker_health".to_string(),
+        json!(status.decode_worker_health),
+    );
+    attrs.insert(
+        "pd.compatibility_state".to_string(),
+        json!(status.compatibility_state),
+    );
+    attrs.insert("pd.allowed_model".to_string(), json!(status.allowed_model));
+    attrs.insert(
+        "pd.kv_format_version".to_string(),
+        json!(status.kv_format_version),
+    );
+    attrs.insert(
+        "pd.inflight_limit".to_string(),
+        json!(status.inflight_limit),
+    );
+    attrs.insert(
+        "pd.inflight_current".to_string(),
+        json!(status.inflight_current),
+    );
+    attrs.insert(
+        "pd.capacity_state".to_string(),
+        json!(status.capacity_state),
+    );
+    attrs.insert("pd.current_state".to_string(), json!(status.current_state));
+    telemetry.emit("stage.pd_serving_status", attrs);
+}
+
+fn sanitize_pd_node_id(value: &str, label: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("{label} must not be empty");
+    }
+    if trimmed.len() > 128
+        || !trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        bail!("{label} must contain only ASCII letters, digits, '.', '-' or '_'");
+    }
+    Ok(trimmed.to_string())
+}
+
+impl PdRouterValidationConfig {
+    fn prefill_worker_telemetry_label(&self) -> &'static str {
+        match self.mode {
+            PdServingMode::Validation => "validation-prefill-worker",
+            PdServingMode::Mvp => "mvp-prefill-worker",
+        }
+    }
+
+    fn decode_worker_telemetry_label(&self) -> &'static str {
+        match self.mode {
+            PdServingMode::Validation => "validation-decode-worker",
+            PdServingMode::Mvp => "mvp-decode-worker",
+        }
+    }
 }
 
 struct PersistentStageLanePool {
@@ -1028,6 +1438,16 @@ impl OpenAiBackendMode {
             Self::LocalRuntime => "local-runtime",
             Self::BinaryChain { .. } => "binary-chain",
             Self::EmbeddedStageZero { .. } => "embedded-stage0",
+            Self::PdRouterValidation(config) => config.mode.backend_label(),
+        }
+    }
+}
+
+impl StageOpenAiBackend {
+    fn pd_serving_mode(&self) -> Option<PdServingMode> {
+        match &self.mode {
+            OpenAiBackendMode::PdRouterValidation(config) => Some(config.mode),
+            _ => None,
         }
     }
 }
@@ -1413,6 +1833,16 @@ struct BinaryChainGeneration<'a> {
     ids: &'a OpenAiGenerationIds,
 }
 
+struct PdRouterValidationGeneration<'a> {
+    config: &'a PdRouterValidationConfig,
+    prompt_token_ids: &'a [i32],
+    max_tokens: u32,
+    sampling: &'a SamplingConfig,
+    chat_sampling_metadata: Option<&'a str>,
+    cancellation: Option<&'a openai_frontend::CancellationToken>,
+    ids: &'a OpenAiGenerationIds,
+}
+
 struct EmbeddedStageZeroGeneration<'a> {
     config: &'a StageConfig,
     wire_dtype: WireActivationDType,
@@ -1654,6 +2084,11 @@ fn generation_event_to_completion_chunk(
 enum TokenControl {
     Continue,
     Stop,
+}
+
+struct PdRouterValidationTokenControl {
+    control: TokenControl,
+    emitted_content_delta: bool,
 }
 
 struct TextGenerationCollector<'a, F>

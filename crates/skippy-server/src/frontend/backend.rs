@@ -436,6 +436,14 @@ impl StageOpenAiBackend {
         let chat_parse_metadata = prompt.chat_parse_metadata.clone();
         let (tx, rx) = mpsc::channel(16);
         let hook_runtime = Some(tokio::runtime::Handle::current());
+        let post_content_token_fault = matches!(
+            &backend.mode,
+            OpenAiBackendMode::PdRouterValidation(config) if config.inject_post_content_failure()
+        );
+        let generation_ids = ids.clone();
+        let failure_backend = backend.clone();
+        let stream_started = PhaseTimer::start();
+        let mut visible_content_delta_count = 0usize;
         let mut chat_stream_parser =
             if let (Some(request), Some(metadata)) = (hook_request.clone(), chat_parse_metadata) {
                 Some(ChatOutputStreamParser::new(
@@ -456,7 +464,7 @@ impl StageOpenAiBackend {
                 hook_request,
                 hook_runtime,
                 Some(&context.cancellation_token()),
-                ids,
+                generation_ids,
                 |chunk| {
                     if context.is_cancelled() {
                         return Err(OpenAiError::backend("stream receiver cancelled"));
@@ -467,10 +475,27 @@ impl StageOpenAiBackend {
                         vec![GenerationStreamEvent::Delta(chunk.to_string())]
                     };
                     for event in events {
+                        let is_content_delta =
+                            matches!(&event, GenerationStreamEvent::Delta(delta) if !delta.is_empty());
                         tx.blocking_send(Ok(event)).map_err(|_| {
                             context.cancel();
                             OpenAiError::backend("stream receiver dropped")
                         })?;
+                        if is_content_delta {
+                            visible_content_delta_count += 1;
+                        }
+                        if post_content_token_fault && visible_content_delta_count >= 1 {
+                            failure_backend.emit_pd_validation_failure(
+                                &ids,
+                                "post_content_token_failure",
+                                "transparent_fallback_blocked_after_content_delta",
+                                Some(visible_content_delta_count),
+                                stream_started.elapsed_ms(),
+                            );
+                            return Err(OpenAiError::backend(
+                                "PD post-content failure: transparent fallback blocked",
+                            ));
+                        }
                     }
                     Ok(())
                 },

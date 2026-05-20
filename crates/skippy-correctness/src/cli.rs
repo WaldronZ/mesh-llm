@@ -17,6 +17,7 @@ pub enum CommandKind {
     SplitScan(SplitScanArgs),
     DtypeMatrix(DtypeMatrixArgs),
     StateHandoff(StateHandoffArgs),
+    RouterValidation(RouterValidationArgs),
 }
 
 #[derive(Args, Clone)]
@@ -192,8 +193,33 @@ pub struct StateHandoffArgs {
     pub synthetic_input_activation: bool,
     #[arg(long)]
     pub binary_control: bool,
+    #[arg(
+        long,
+        help = "Connect to already-running binary source/restore servers instead of spawning local servers. Intended for cross-machine state handoff spikes."
+    )]
+    pub external_binary_control: bool,
     #[arg(long)]
     pub allow_mismatch: bool,
+}
+
+#[derive(Args)]
+pub struct RouterValidationArgs {
+    #[command(flatten)]
+    pub output: OutputArgs,
+    #[arg(long)]
+    pub markdown_out: Option<PathBuf>,
+    #[arg(long, default_value = "pd-router-validation-local")]
+    pub request_id: String,
+    #[arg(long, default_value = "handoff-local-001")]
+    pub handoff_id: String,
+    #[arg(long, default_value = "pgx-prefill-validation")]
+    pub source_node_id: String,
+    #[arg(long, default_value = "mac-decode-validation")]
+    pub target_node_id: String,
+    #[arg(long, default_value = "google/gemma-4-31b-it:bf16")]
+    pub model_id: String,
+    #[arg(long, default_value_t = 4096)]
+    pub synthetic_payload_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

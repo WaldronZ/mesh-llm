@@ -1,0 +1,57 @@
+{
+  "change": "pd-disaggregated-serving-mvp",
+  "result": "pending",
+  "recommendation": "pending",
+  "environment": {
+    "coordinator_router_decode_role": "pending",
+    "prefill_export_role": "pending",
+    "mac_binary_sha256": null,
+    "pgx_binary_sha256": null,
+    "model_artifact_sha256": null,
+    "tokenizer_metadata_hash": null,
+    "chat_template_hash": null,
+    "pd_serving_default_off_checked": null,
+    "mvp_test_fault_guard_default_off_checked": null
+  },
+  "positive_path": [],
+  "failure_and_fallback": {
+    "manifest_mismatch": {
+      "expected": "fail_closed_before_decode_continuation",
+      "result": "pending"
+    },
+    "pre_content_failure": {
+      "expected": "fallback_or_documented_pre_content_error_before_content",
+      "result": "pending"
+    },
+    "post_content_failure": {
+      "expected": "content_delta_then_explicit_error_or_partial_termination_no_transparent_fallback",
+      "result": "pending"
+    },
+    "cancellation_cleanup": {
+      "expected": "temporary_request_state_released",
+      "result": "pending"
+    }
+  },
+  "mvp_test_fault_guard": {
+    "default_is_none": "pending",
+    "non_none_without_allow_rejected": "pending",
+    "requires_pd_serving_mvp": "pending",
+    "pd_router_validation_not_used_as_mvp_stand_in": "pending"
+  },
+  "telemetry_privacy": {
+    "prompt_text": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "private_machine_details": "excluded"
+  },
+  "cleanup": {
+    "mac_router_stopped": "pending",
+    "mac_decode_import_stopped": "pending",
+    "tunnel_stopped_if_used": "pending",
+    "pgx_prefill_export_stopped": "pending",
+    "mac_ports_released": "pending",
+    "pgx_ports_released": "pending"
+  }
+}

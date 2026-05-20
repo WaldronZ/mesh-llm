@@ -8,9 +8,10 @@ pub use activation::{
     encode_f32_activation_payload_with_state_flags,
 };
 pub use codec::{
-    read_stage_message, recv_ready, recv_reply, send_ready, send_reply_ack,
-    send_reply_ack_with_stats, send_reply_predicted, send_reply_predicted_tokens_with_stats,
-    send_reply_predicted_with_stats, write_stage_message,
+    read_stage_message, read_stage_message_timed, recv_ready, recv_reply, send_ready,
+    send_reply_ack, send_reply_ack_with_stats, send_reply_predicted,
+    send_reply_predicted_tokens_with_stats, send_reply_predicted_with_stats, write_stage_message,
+    write_stage_message_timed, StageMessageReadTiming, StageMessageWriteTiming,
 };
 pub use types::{
     activation_frame_flags_from_state_flags, activation_state_flags_from_frame_flags, state_flags,
@@ -280,6 +281,36 @@ mod tests {
         assert_eq!(decoded.raw_bytes, vec![1, 2, 3, 4]);
         assert!(decoded.tokens.is_empty());
         assert!(decoded.activation.is_empty());
+    }
+
+    #[test]
+    fn timed_state_import_message_records_raw_payload_timing() {
+        let state = StageStateHeader::new(WireMessageKind::StateImport, WireActivationDType::F32);
+        let message = StageWireMessage {
+            kind: WireMessageKind::StateImport,
+            pos_start: 0,
+            token_count: 4,
+            state,
+            request_id: 31,
+            session_id: 37,
+            sampling: None,
+            chat_sampling_metadata: None,
+            tokens: Vec::new(),
+            positions: Vec::new(),
+            activation: Vec::new(),
+            raw_bytes: vec![1, 2, 3, 4],
+        };
+        let mut bytes = Vec::new();
+        let write_timing =
+            write_stage_message_timed(&mut bytes, &message, WireActivationDType::F32).unwrap();
+        assert_eq!(bytes.len(), STAGE_WIRE_FIXED_HEADER_BYTES + 4);
+        assert!(write_timing.total_ms >= write_timing.raw_payload_ms);
+
+        let (decoded, read_timing) = read_stage_message_timed(Cursor::new(bytes), 2048).unwrap();
+        assert_eq!(decoded.kind, WireMessageKind::StateImport);
+        assert_eq!(decoded.raw_bytes, vec![1, 2, 3, 4]);
+        assert!(read_timing.total_ms >= read_timing.raw_payload_ms);
+        assert!(read_timing.total_ms >= read_timing.header_ms);
     }
 
     #[test]

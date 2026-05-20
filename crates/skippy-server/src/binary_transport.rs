@@ -26,10 +26,10 @@ use skippy_protocol::{
     binary::{
         activation_frame_flags_from_state_flags, read_stage_message, recv_reply, send_ready,
         send_reply_ack, send_reply_ack_with_stats, send_reply_predicted_tokens_with_stats,
-        send_reply_predicted_with_stats, state_flags, StageReplyStats, StageSamplingConfig,
-        StageStateHeader, StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind,
-        STAGE_LOGIT_BIAS_WIRE_BYTES, STAGE_SAMPLING_CONFIG_BASE_BYTES,
-        STAGE_WIRE_FIXED_HEADER_BYTES,
+        send_reply_predicted_with_stats, state_flags, write_stage_message, StageReplyStats,
+        StageSamplingConfig, StageStateHeader, StageWireMessage, WireActivationDType,
+        WireMessageKind, WireReplyKind, STAGE_LOGIT_BIAS_WIRE_BYTES,
+        STAGE_SAMPLING_CONFIG_BASE_BYTES, STAGE_WIRE_FIXED_HEADER_BYTES,
     },
     MessageBase, StageConfig, StageTopology, SCHEMA_VERSION,
 };
@@ -712,12 +712,127 @@ fn handle_binary_connection(
             continue;
         }
 
-        if message.kind == WireMessageKind::StateImport {
-            bail!("binary state import is no longer supported by the skippy runtime ABI");
-        }
-
-        if message.kind == WireMessageKind::StateExport {
-            bail!("binary state export is no longer supported by the skippy runtime ABI");
+        if matches!(
+            message.kind,
+            WireMessageKind::StateImport | WireMessageKind::StateExport
+        ) {
+            if !message.state.matches_kind(message.kind) {
+                bail!("binary stage state does not match state-control message kind");
+            }
+            let control_started = Instant::now();
+            let mut control_stats = std::mem::take(&mut pending_reply_stats);
+            if let Some(forwarder) = async_forwarder.as_mut() {
+                forwarder
+                    .flush()
+                    .context("flush async forwards before state control")?;
+            }
+            drain_deferred_prefill_replies(
+                downstream.as_mut(),
+                &mut pending_prefill_replies,
+                &mut control_stats,
+            )
+            .context("drain deferred replies before state control")?;
+            if downstream.is_some() {
+                bail!("binary state import/export is only supported on terminal stages");
+            }
+            let full_state = (message.state.flags & state_flags::FULL_STATE) != 0;
+            let state_token_count = message.state.prompt_token_count.max(0) as u64;
+            let local_started = Instant::now();
+            let mut state_payload_bytes = message.raw_bytes.len();
+            match message.kind {
+                WireMessageKind::StateExport => {
+                    let exported = {
+                        let mut runtime = runtime.lock().expect("runtime lock poisoned");
+                        if full_state {
+                            runtime
+                                .export_full_state(&session_key)
+                                .context("export binary full state")?
+                        } else {
+                            runtime
+                                .export_state(&session_key)
+                                .context("export binary state")?
+                        }
+                    };
+                    state_payload_bytes = exported.len();
+                    let mut state = StageStateHeader::new(WireMessageKind::StateImport, wire_dtype);
+                    state.flags |= message.state.flags & state_flags::FULL_STATE;
+                    state.prompt_token_count = message.state.prompt_token_count;
+                    let token_count = i32::try_from(exported.len())
+                        .context("exported binary state payload exceeds i32 length")?;
+                    let reply = StageWireMessage {
+                        kind: WireMessageKind::StateImport,
+                        pos_start: 0,
+                        token_count,
+                        state,
+                        request_id: message.request_id,
+                        session_id: message.session_id,
+                        sampling: None,
+                        chat_sampling_metadata: None,
+                        tokens: Vec::new(),
+                        positions: Vec::new(),
+                        activation: Vec::new(),
+                        raw_bytes: exported,
+                    };
+                    write_stage_message(&mut *upstream, &reply, wire_dtype)
+                        .context("send binary state export payload")?;
+                }
+                WireMessageKind::StateImport => {
+                    {
+                        let mut runtime = runtime.lock().expect("runtime lock poisoned");
+                        if full_state {
+                            if state_token_count > 0 {
+                                runtime
+                                    .import_full_state_for_token_count(
+                                        &session_key,
+                                        &message.raw_bytes,
+                                        state_token_count,
+                                    )
+                                    .context("import binary full state for token count")?;
+                            } else {
+                                runtime
+                                    .import_full_state(&session_key, &message.raw_bytes)
+                                    .context("import binary full state")?;
+                            }
+                        } else if state_token_count > 0 {
+                            runtime
+                                .import_state_for_token_count(
+                                    &session_key,
+                                    &message.raw_bytes,
+                                    state_token_count,
+                                )
+                                .context("import binary state for token count")?;
+                        } else {
+                            runtime
+                                .import_state(&session_key, &message.raw_bytes)
+                                .context("import binary state")?;
+                        }
+                    }
+                    control_stats.kv_imported_pages += 1;
+                    if message.state.prompt_token_count > 0 {
+                        control_stats.kv_imported_tokens +=
+                            i64::from(message.state.prompt_token_count);
+                    }
+                    send_reply_ack_with_stats(&mut *upstream, control_stats)
+                        .context("state import ack")?;
+                }
+                _ => unreachable!("state control checked above"),
+            }
+            let mut attrs = binary_message_attrs(config, session_id, &message);
+            attrs.insert("llama_stage.full_state".to_string(), json!(full_state));
+            attrs.insert(
+                "llama_stage.state_payload_bytes".to_string(),
+                json!(state_payload_bytes),
+            );
+            attrs.insert(
+                "llama_stage.state_control_local_ms".to_string(),
+                json!(elapsed_ms(local_started)),
+            );
+            attrs.insert(
+                "llama_stage.elapsed_ms".to_string(),
+                json!(elapsed_ms(control_started)),
+            );
+            telemetry.emit_debug("stage.binary_state_control", attrs);
+            continue;
         }
 
         if !message.state.matches_kind(message.kind) {

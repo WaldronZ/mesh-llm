@@ -1,0 +1,218 @@
+{
+  "change": "pd-disaggregated-serving-mvp",
+  "result": "pass",
+  "scoped_mvp": "pass",
+  "production_ready": "no",
+  "hardening_regression": {
+    "status": "resolved_by_pd-disaggregated-serving-hardening",
+    "note": "Hardening/regression tasks were deferred from this MVP change and completed by pd-disaggregated-serving-hardening; they were not completed directly in this change.",
+    "resolved_change": "pd-disaggregated-serving-hardening"
+  },
+  "recommendation": "archive_after_hardening_review",
+  "environment": {
+    "coordinator_router_decode_role": "mac_coordinator_router_decode_foreground",
+    "prefill_export_role": "single_pgx_prefill_export_foreground",
+    "mac_binary_sha256": "810288aa45f0e40a22395f059c7fee740874526f2b4c18c4fffdfd8d9b9fac98",
+    "pgx_binary_sha256": "eae61b887b6a9a850afccb789cc9df0c40b98624e6bbac00fd0d744c281ed99e",
+    "model_artifact_sha256": "96e3d95730b961682fe286a0e52dcda8173c5c2bda49c057801f437281556d01",
+    "tokenizer_metadata_hash": "6aa0dc8786823d04fb6d953994df47eb4f9382ed07efd8898411659778e0a397",
+    "chat_template_hash": "f86783fcbe17e6e9bd84d7246344a8a2f8c4d35860ca14edef0fc90559a528a3",
+    "pd_serving_default_off_checked": true,
+    "mvp_test_fault_guard_default_off_checked": "pass"
+  },
+  "positive_path": [
+    {
+      "prompt_id": "short-1",
+      "http": 200,
+      "sse_data_lines": 34,
+      "result": "pass",
+      "prompt_tokens": 26,
+      "kv_bytes": 23431224,
+      "export_ms": 330.729,
+      "network_transfer_ms": 207.118,
+      "import_ms": 1.127,
+      "router_overhead_ms": 3741.946,
+      "ttft_ms": 806.727,
+      "decode_tokens_per_sec": 10.526
+    },
+    {
+      "prompt_id": "short-2",
+      "http": 200,
+      "sse_data_lines": 34,
+      "result": "pass",
+      "prompt_tokens": 23,
+      "kv_bytes": 20727792,
+      "export_ms": 366.04,
+      "network_transfer_ms": 181.122,
+      "import_ms": 1.032,
+      "router_overhead_ms": 3736.346,
+      "ttft_ms": 798.619,
+      "decode_tokens_per_sec": 10.549
+    },
+    {
+      "prompt_id": "medium-1",
+      "http": 200,
+      "sse_data_lines": 34,
+      "result": "pass",
+      "prompt_tokens": 34,
+      "kv_bytes": 30640376,
+      "export_ms": 332.925,
+      "network_transfer_ms": 269.868,
+      "import_ms": 1.161,
+      "router_overhead_ms": 3885.392,
+      "ttft_ms": 946.777,
+      "decode_tokens_per_sec": 10.546
+    },
+    {
+      "prompt_id": "medium-2",
+      "http": 200,
+      "sse_data_lines": 34,
+      "result": "pass",
+      "prompt_tokens": 34,
+      "kv_bytes": 30640376,
+      "export_ms": 353.944,
+      "network_transfer_ms": 267.261,
+      "import_ms": 1.115,
+      "router_overhead_ms": 3846.594,
+      "ttft_ms": 907.823,
+      "decode_tokens_per_sec": 10.548
+    },
+    {
+      "prompt_id": "long-1",
+      "http": 200,
+      "sse_data_lines": 34,
+      "result": "pass",
+      "prompt_tokens": 92,
+      "kv_bytes": 82906728,
+      "export_ms": 776.195,
+      "network_transfer_ms": 722.551,
+      "import_ms": 1.754,
+      "router_overhead_ms": 4946.902,
+      "ttft_ms": 2004.193,
+      "decode_tokens_per_sec": 10.5
+    },
+    {
+      "prompt_id": "long-2",
+      "http": 200,
+      "sse_data_lines": 34,
+      "result": "pass",
+      "prompt_tokens": 78,
+      "kv_bytes": 70290712,
+      "export_ms": 700.88,
+      "network_transfer_ms": 609.349,
+      "import_ms": 1.567,
+      "router_overhead_ms": 4747.575,
+      "ttft_ms": 1806.218,
+      "decode_tokens_per_sec": 10.502
+    },
+    {
+      "prompt_id": "target-long-context-1",
+      "http": 200,
+      "sse_data_lines": 34,
+      "result": "pass",
+      "prompt_tokens": 124,
+      "kv_bytes": 111743336,
+      "export_ms": 914.564,
+      "network_transfer_ms": 973.868,
+      "import_ms": 2.252,
+      "router_overhead_ms": 5522.178,
+      "ttft_ms": 2578.507,
+      "decode_tokens_per_sec": 10.497
+    },
+    {
+      "prompt_id": "target-long-context-2",
+      "http": 200,
+      "sse_data_lines": 34,
+      "result": "pass",
+      "prompt_tokens": 80,
+      "kv_bytes": 72093000,
+      "export_ms": 667.467,
+      "network_transfer_ms": 627.02,
+      "import_ms": 1.671,
+      "router_overhead_ms": 4763.357,
+      "ttft_ms": 1820.005,
+      "decode_tokens_per_sec": 10.498
+    }
+  ],
+  "post_hook_sanity_positive": {
+    "prompt_id": "short-1",
+    "http": 200,
+    "sse_data_lines": 34,
+    "done_lines": 1,
+    "error_lines": 0,
+    "result": "pass",
+    "kv_bytes": 23431224,
+    "export_ms": 805.529,
+    "network_transfer_ms": 207.071,
+    "import_ms": 6.253,
+    "router_overhead_ms": 4271.169,
+    "ttft_ms": 1334.882,
+    "decode_tokens_per_sec": 10.49
+  },
+  "failure_and_fallback": {
+    "manifest_mismatch": {
+      "expected": "fail_closed_before_decode_continuation",
+      "result": "pass",
+      "http": 200,
+      "sse_data_lines": 3,
+      "done_lines": 1,
+      "error_lines": 1,
+      "content_delta_lines": 0,
+      "pd_mvp_result": "fail",
+      "failure_phase": "manifest_validation",
+      "failure_reason": "payload_checksum"
+    },
+    "pre_content_failure": {
+      "expected": "fallback_or_documented_pre_content_error_before_content",
+      "result": "pass",
+      "http": 200,
+      "sse_data_lines": 34,
+      "done_lines": 1,
+      "error_lines": 0,
+      "content_delta_lines": 31,
+      "pd_mvp_result": "fallback",
+      "fallback_reason": "pre_content_failure_injected",
+      "pre_token": true
+    },
+    "post_content_failure": {
+      "expected": "content_delta_then_explicit_error_or_partial_termination_no_transparent_fallback",
+      "result": "pass",
+      "http": 200,
+      "sse_data_lines": 4,
+      "done_lines": 1,
+      "error_lines": 1,
+      "content_delta_lines": 1,
+      "pd_mvp_result": "fail",
+      "failure_phase": "post_content_token_failure",
+      "failure_reason": "transparent_fallback_blocked_after_content_delta",
+      "content_delta_count": 1
+    },
+    "cancellation_cleanup": {
+      "expected": "temporary_request_state_released",
+      "result": "pass"
+    }
+  },
+  "mvp_test_fault_guard": {
+    "default_is_none": "pass_in_local_tests",
+    "non_none_without_allow_rejected": "pass_in_local_tests",
+    "requires_pd_serving_mvp": "pass_in_local_tests",
+    "pd_router_validation_not_used_as_mvp_stand_in": "pass"
+  },
+  "telemetry_privacy": {
+    "prompt_text": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "private_machine_details": "excluded"
+  },
+  "cleanup": {
+    "mac_router_stopped": "pass",
+    "mac_decode_import_stopped": "pass",
+    "tunnel_stopped_if_used": "pass",
+    "pgx_prefill_export_stopped": "pass",
+    "mac_ports_released": "pass",
+    "pgx_ports_released": "pass"
+  },
+  "decision": "Scoped MVP validation passed for one Mac coordinator/decode worker plus one PGX prefill worker. Positive serving, manifest fail-closed behavior, pre-content fallback, post-content failure semantics, sanitized telemetry, and foreground cleanup passed within the approved single-request validation scope. This is not production-ready approval. Hardening/regression items deferred from this change were resolved by pd-disaggregated-serving-hardening."
+}

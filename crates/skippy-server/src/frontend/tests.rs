@@ -1236,6 +1236,278 @@ fn generation_ids_are_unique_under_fast_creation() {
 }
 
 #[test]
+fn pd_router_validation_config_requires_explicit_fields() {
+    use clap::Parser as _;
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-router-validation",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+
+    let error = pd_router_validation_config_from_args(&args, "model", PdServingMode::Validation)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-router-validation requires --pd-prefill-addr"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn pd_serving_mvp_config_requires_explicit_roles_and_no_fault_hooks() {
+    use clap::Parser as _;
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let error =
+        pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("requires explicit --pd-source-node-id"),
+        "{error:?}"
+    );
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-fault-injection",
+        "manifest-mismatch",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let error =
+        pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-fault-injection is validation-only"),
+        "{error:?}"
+    );
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-serving-mvp-test-fault",
+        "manifest-mismatch",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let error =
+        pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-serving-mvp-test-fault requires --pd-serving-mvp-allow-test-faults"),
+        "{error:?}"
+    );
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-router-validation",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-serving-mvp-allow-test-faults",
+        "--pd-serving-mvp-test-fault",
+        "manifest-mismatch",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let error = pd_router_validation_config_from_args(&args, "model", PdServingMode::Validation)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-serving-mvp-test-fault requires --pd-serving-mvp"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn pd_serving_mvp_config_accepts_explicit_fields() {
+    use clap::Parser as _;
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let config = pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap();
+    assert_eq!(config.mode, PdServingMode::Mvp);
+    assert_eq!(config.source_node_id, "pgx-prefill-mvp");
+    assert_eq!(config.target_node_id, "mac-decode-mvp");
+    assert_eq!(config.fault_injection, PdRouterValidationFault::None);
+    assert_eq!(config.mvp_test_fault, PdServingMvpTestFault::None);
+}
+
+#[test]
+fn pd_serving_mvp_config_accepts_test_fault_only_with_explicit_allow() {
+    use clap::Parser as _;
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-serving-mvp-allow-test-faults",
+        "--pd-serving-mvp-test-fault",
+        "pre-content-failure",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let config = pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap();
+    assert_eq!(
+        config.mvp_test_fault,
+        PdServingMvpTestFault::PreContentFailure
+    );
+}
+
+#[test]
+fn pd_serving_status_is_sanitized_and_additive() {
+    let config = PdRouterValidationConfig {
+        mode: PdServingMode::Mvp,
+        prefill_addr: "127.0.0.1:19081".to_string(),
+        decode_addr: "127.0.0.1:19082".to_string(),
+        wire_dtype: WireActivationDType::F16,
+        startup_timeout_secs: 1,
+        model_id: "google_gemma-4-31B-it-bf16".to_string(),
+        expected_artifact_sha256:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        expected_tokenizer_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            .to_string(),
+        expected_chat_template_hash:
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+        source_node_id: "private-prefill-host.example".to_string(),
+        target_node_id: "private-decode-host.example".to_string(),
+        fault_injection: PdRouterValidationFault::None,
+        mvp_test_fault: PdServingMvpTestFault::None,
+    };
+    let status = pd_serving_status_for_start(&config, 1);
+    let serialized = serde_json::to_value(&status).unwrap();
+
+    assert_eq!(serialized["enabled"], true);
+    assert_eq!(serialized["available"], true);
+    assert_eq!(serialized["mode"], "pd-disaggregated-serving-mvp");
+    assert_eq!(serialized["prefill_worker_role"], "mvp-prefill-worker");
+    assert_eq!(serialized["decode_worker_role"], "mvp-decode-worker");
+    assert_eq!(serialized["inflight_limit"], 1);
+    let serialized = serialized.to_string();
+    assert!(!serialized.contains("private-prefill-host"));
+    assert!(!serialized.contains("private-decode-host"));
+    assert!(!serialized.contains("127.0.0.1"));
+    assert!(!serialized.contains("aaaaaaaaaaaaaaaa"));
+    assert!(!serialized.contains("/Users/"));
+}
+
+#[test]
 fn prefill_chunk_schedule_parses_and_repeats_last_size() {
     let schedule = PrefillChunkSchedule::parse(Some("128, 256,512"))
         .unwrap()

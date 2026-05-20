@@ -3001,7 +3001,7 @@ impl StageSession {
         token_count: u64,
     ) -> Result<()> {
         self.import_state(layer_start, layer_end, input)?;
-        self.token_count = self.token_count.max(token_count);
+        self.set_position(token_count)?;
         Ok(())
     }
 
@@ -3072,7 +3072,7 @@ impl StageSession {
         token_count: u64,
     ) -> Result<()> {
         self.import_full_state(layer_start, layer_end, input)?;
-        self.token_count = self.token_count.max(token_count);
+        self.set_position(token_count)?;
         Ok(())
     }
 
