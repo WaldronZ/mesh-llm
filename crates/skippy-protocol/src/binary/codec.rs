@@ -1,4 +1,7 @@
-use std::io::{self, Read, Write};
+use std::{
+    io::{self, Read, Write},
+    time::Instant,
+};
 
 use super::{
     activation::activation_wire_bytes_with_state_flags, invalid_data, invalid_input,
@@ -85,11 +88,36 @@ pub fn recv_reply(mut reader: impl Read) -> io::Result<StageReply> {
     })
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StageMessageWriteTiming {
+    pub total_ms: f64,
+    pub raw_payload_ms: f64,
+    pub activation_payload_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StageMessageReadTiming {
+    pub total_ms: f64,
+    pub header_ms: f64,
+    pub raw_payload_ms: f64,
+    pub activation_payload_ms: f64,
+}
+
 pub fn write_stage_message(
-    mut writer: impl Write,
+    writer: impl Write,
     message: &StageWireMessage,
     dtype: WireActivationDType,
 ) -> io::Result<()> {
+    write_stage_message_timed(writer, message, dtype).map(|_| ())
+}
+
+pub fn write_stage_message_timed(
+    mut writer: impl Write,
+    message: &StageWireMessage,
+    dtype: WireActivationDType,
+) -> io::Result<StageMessageWriteTiming> {
+    let total_started = Instant::now();
+    let mut timing = StageMessageWriteTiming::default();
     // Wire v4 fixed prefix, little-endian:
     // kind, pos_start, token_count, token_sideband_count, position_sideband_count (5 x i32);
     // StageStateHeader (10 x i32); request_id, session_id (2 x u64);
@@ -138,8 +166,11 @@ pub fn write_stage_message(
     }
 
     if message.kind == WireMessageKind::StateImport {
+        let payload_started = Instant::now();
         writer.write_all(&message.raw_bytes)?;
-        return Ok(());
+        timing.raw_payload_ms = elapsed_ms(payload_started);
+        timing.total_ms = elapsed_ms(total_started);
+        return Ok(timing);
     }
     for token in &message.tokens {
         write_i32(&mut writer, *token)?;
@@ -147,11 +178,24 @@ pub fn write_stage_message(
     for position in &message.positions {
         write_i32(&mut writer, *position)?;
     }
+    let payload_started = Instant::now();
     writer.write_all(&message.activation)?;
-    Ok(())
+    timing.activation_payload_ms = elapsed_ms(payload_started);
+    timing.total_ms = elapsed_ms(total_started);
+    Ok(timing)
 }
 
-pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<StageWireMessage> {
+pub fn read_stage_message(reader: impl Read, n_embd: i32) -> io::Result<StageWireMessage> {
+    read_stage_message_timed(reader, n_embd).map(|(message, _)| message)
+}
+
+pub fn read_stage_message_timed(
+    mut reader: impl Read,
+    n_embd: i32,
+) -> io::Result<(StageWireMessage, StageMessageReadTiming)> {
+    let total_started = Instant::now();
+    let header_started = Instant::now();
+    let mut timing = StageMessageReadTiming::default();
     let kind = WireMessageKind::try_from(read_i32(&mut reader)?)?;
     let pos_start = read_i32(&mut reader)?;
     let token_count = read_i32(&mut reader)?;
@@ -181,43 +225,54 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
     } else {
         None
     };
+    timing.header_ms = elapsed_ms(header_started);
     let dtype = state.dtype()?;
     if kind == WireMessageKind::Stop {
-        return Ok(StageWireMessage {
-            kind,
-            pos_start,
-            token_count,
-            state,
-            request_id,
-            session_id,
-            sampling,
-            chat_sampling_metadata,
-            tokens: Vec::new(),
-            positions: Vec::new(),
-            activation: Vec::new(),
-            raw_bytes: Vec::new(),
-        });
+        timing.total_ms = elapsed_ms(total_started);
+        return Ok((
+            StageWireMessage {
+                kind,
+                pos_start,
+                token_count,
+                state,
+                request_id,
+                session_id,
+                sampling,
+                chat_sampling_metadata,
+                tokens: Vec::new(),
+                positions: Vec::new(),
+                activation: Vec::new(),
+                raw_bytes: Vec::new(),
+            },
+            timing,
+        ));
     }
     if token_count < 0 || token_sideband_count < 0 || position_sideband_count < 0 {
         return Err(invalid_data("negative wire count"));
     }
     if kind == WireMessageKind::StateImport {
         let mut raw_bytes = vec![0; token_count as usize];
+        let payload_started = Instant::now();
         reader.read_exact(&mut raw_bytes)?;
-        return Ok(StageWireMessage {
-            kind,
-            pos_start,
-            token_count,
-            state,
-            request_id,
-            session_id,
-            sampling,
-            chat_sampling_metadata,
-            tokens: Vec::new(),
-            positions: Vec::new(),
-            activation: Vec::new(),
-            raw_bytes,
-        });
+        timing.raw_payload_ms = elapsed_ms(payload_started);
+        timing.total_ms = elapsed_ms(total_started);
+        return Ok((
+            StageWireMessage {
+                kind,
+                pos_start,
+                token_count,
+                state,
+                request_id,
+                session_id,
+                sampling,
+                chat_sampling_metadata,
+                tokens: Vec::new(),
+                positions: Vec::new(),
+                activation: Vec::new(),
+                raw_bytes,
+            },
+            timing,
+        ));
     }
 
     let mut tokens = Vec::with_capacity(token_sideband_count as usize);
@@ -236,22 +291,32 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
         };
     let mut activation = vec![0; activation_bytes];
     if activation_bytes > 0 {
+        let payload_started = Instant::now();
         reader.read_exact(&mut activation)?;
+        timing.activation_payload_ms = elapsed_ms(payload_started);
     }
-    Ok(StageWireMessage {
-        kind,
-        pos_start,
-        token_count,
-        state,
-        request_id,
-        session_id,
-        sampling,
-        chat_sampling_metadata,
-        tokens,
-        positions,
-        activation,
-        raw_bytes: Vec::new(),
-    })
+    timing.total_ms = elapsed_ms(total_started);
+    Ok((
+        StageWireMessage {
+            kind,
+            pos_start,
+            token_count,
+            state,
+            request_id,
+            session_id,
+            sampling,
+            chat_sampling_metadata,
+            tokens,
+            positions,
+            activation,
+            raw_bytes: Vec::new(),
+        },
+        timing,
+    ))
+}
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 fn write_state_header(mut writer: impl Write, state: StageStateHeader) -> io::Result<()> {

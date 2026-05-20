@@ -119,6 +119,26 @@ impl StageOpenAiBackend {
                 },
                 |token| collector.push_token(token),
             )?,
+            OpenAiBackendMode::PdRouterValidation(config) => self
+                .generate_pd_router_validation_tokens(
+                    PdRouterValidationGeneration {
+                        config: &config,
+                        prompt_token_ids: &prompt_token_ids,
+                        max_tokens,
+                        sampling: &sampling,
+                        chat_sampling_metadata,
+                        cancellation,
+                        ids: &ids,
+                    },
+                    |token| {
+                        let streamed_before = collector.streamed_text_len;
+                        let control = collector.push_token(token)?;
+                        Ok(PdRouterValidationTokenControl {
+                            control,
+                            emitted_content_delta: collector.streamed_text_len > streamed_before,
+                        })
+                    },
+                )?,
         };
 
         let output = collector.finish(prompt_token_ids.len(), cache_stats)?;
@@ -214,7 +234,9 @@ impl StageOpenAiBackend {
         match &self.mode {
             OpenAiBackendMode::LocalRuntime => {}
             OpenAiBackendMode::EmbeddedStageZero { config, .. } if config.downstream.is_none() => {}
-            OpenAiBackendMode::EmbeddedStageZero { .. } | OpenAiBackendMode::BinaryChain { .. } => {
+            OpenAiBackendMode::EmbeddedStageZero { .. }
+            | OpenAiBackendMode::BinaryChain { .. }
+            | OpenAiBackendMode::PdRouterValidation(_) => {
                 return Err(OpenAiError::unsupported(
                     "multimodal requests require an embedded stage-0 runtime",
                 ));

@@ -143,6 +143,7 @@ struct BinaryStateHandoffConfig {
     cache_decoded_result_hits: bool,
     synthetic_input_activation: bool,
     binary_control: bool,
+    external_binary_control: bool,
     child_logs: bool,
     startup_timeout_secs: u64,
     model_identity: ModelIdentity,
@@ -493,6 +494,7 @@ pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
         cache_decoded_result_hits: args.cache_decoded_result_hits,
         synthetic_input_activation: args.synthetic_input_activation,
         binary_control: args.binary_control,
+        external_binary_control: args.external_binary_control,
         child_logs: args.server.child_logs,
         startup_timeout_secs: args.server.startup_timeout_secs,
         model_identity: model_identity.clone(),
@@ -1159,6 +1161,11 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     let use_binary_control = args.binary_control
         && include_output
         && args.state_payload_kind == StatePayloadKind::FullState;
+    if args.external_binary_control && !use_binary_control {
+        bail!(
+            "--external-binary-control requires --binary-control with full-state payload on a terminal stage range"
+        );
+    }
     if !use_binary_control {
         return run_local_state_handoff(
             &args,
@@ -1177,6 +1184,12 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     }
 
     let run_id = generate_run_id();
+    let handoff_session_id = run_id
+        .strip_prefix("correctness-")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1);
+    let source_session_id = handoff_session_id.saturating_mul(2).max(1);
+    let restore_session_id = source_session_id.saturating_add(1);
     let model_id = args.model_identity.model_id.clone();
     let source_config_path = temp_config_path_for(&run_id, "state-source");
     let restore_config_path = temp_config_path_for(&run_id, "state-restore");
@@ -1249,20 +1262,24 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     )
     .with_context(|| format!("failed to write {}", restore_config_path.display()))?;
 
-    let mut source_command = Command::new(&args.stage_server_bin);
-    source_command.args([
-        "serve-binary",
-        "--config",
-        source_config_path
-            .to_str()
-            .context("source config path is not valid UTF-8")?,
-        "--activation-width",
-        &stage_activation_width.to_string(),
-        "--activation-wire-dtype",
-        &args.activation_wire_dtype,
-    ]);
-    configure_child_logs(&mut source_command, args.child_logs);
-    let _source = ChildGuard::spawn(source_command)?;
+    let source_guard = if args.external_binary_control {
+        None
+    } else {
+        let mut source_command = Command::new(&args.stage_server_bin);
+        source_command.args([
+            "serve-binary",
+            "--config",
+            source_config_path
+                .to_str()
+                .context("source config path is not valid UTF-8")?,
+            "--activation-width",
+            &stage_activation_width.to_string(),
+            "--activation-wire-dtype",
+            &args.activation_wire_dtype,
+        ]);
+        configure_child_logs(&mut source_command, args.child_logs);
+        Some(ChildGuard::spawn(source_command)?)
+    };
 
     let mut source_stream = connect_ready(args.source_bind_addr, args.startup_timeout_secs)
         .context("source binary server did not become ready")?;
@@ -1273,13 +1290,20 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         prefill_input.as_ref(),
         wire_dtype,
         stage_activation_width,
+        source_session_id,
     )
     .context("send source prefill")?;
     let source_prefill_ms = elapsed_ms(source_prefill_started);
     let source_export_started = Instant::now();
-    let state_bytes =
-        export_state_over_binary(&mut source_stream, wire_dtype, args.activation_width, true)
-            .context("export source state")?;
+    let state_bytes = export_state_over_binary(
+        &mut source_stream,
+        wire_dtype,
+        args.activation_width,
+        true,
+        prefix.len(),
+        source_session_id,
+    )
+    .context("export source state")?;
     let source_export_ms = elapsed_ms(source_export_started);
     let source_decode_started = Instant::now();
     let source_predicted_token = decode_for_state_handoff(
@@ -1289,43 +1313,61 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         decode_input.as_ref(),
         wire_dtype,
         stage_activation_width,
+        source_session_id,
     )
     .context("decode source continuation")?;
     let source_decode_ms = elapsed_ms(source_decode_started);
     write_stage_message(
         &mut source_stream,
-        &StageWireMessage::stop(wire_dtype),
+        &StageWireMessage::stop_with_identity(wire_dtype, 5, source_session_id),
         wire_dtype,
     )
     .context("send source stop")?;
     drop(source_stream);
-    drop(_source);
+    drop(source_guard);
 
-    let mut restore_command = Command::new(&args.stage_server_bin);
-    restore_command.args([
-        "serve-binary",
-        "--config",
-        restore_config_path
-            .to_str()
-            .context("restore config path is not valid UTF-8")?,
-        "--activation-width",
-        &stage_activation_width.to_string(),
-        "--activation-wire-dtype",
-        &args.activation_wire_dtype,
-    ]);
-    configure_child_logs(&mut restore_command, args.child_logs);
-    let _restore = ChildGuard::spawn(restore_command)?;
+    let restore_guard = if args.external_binary_control {
+        None
+    } else {
+        let mut restore_command = Command::new(&args.stage_server_bin);
+        restore_command.args([
+            "serve-binary",
+            "--config",
+            restore_config_path
+                .to_str()
+                .context("restore config path is not valid UTF-8")?,
+            "--activation-width",
+            &stage_activation_width.to_string(),
+            "--activation-wire-dtype",
+            &args.activation_wire_dtype,
+        ]);
+        configure_child_logs(&mut restore_command, args.child_logs);
+        Some(ChildGuard::spawn(restore_command)?)
+    };
 
     let mut restore_stream = connect_ready(args.restore_bind_addr, args.startup_timeout_secs)
         .context("restore binary server did not become ready")?;
     let restore_import_started = Instant::now();
-    import_state_over_binary(&mut restore_stream, &state_bytes, wire_dtype, true)
-        .context("import state into restore server")?;
+    import_state_over_binary(
+        &mut restore_stream,
+        &state_bytes,
+        wire_dtype,
+        true,
+        prefix.len(),
+        restore_session_id,
+    )
+    .context("import state into restore server")?;
     let restore_import_ms = elapsed_ms(restore_import_started);
     let restore_export_started = Instant::now();
-    let roundtrip_state_bytes =
-        export_state_over_binary(&mut restore_stream, wire_dtype, args.activation_width, true)
-            .context("export restored state")?;
+    let roundtrip_state_bytes = export_state_over_binary(
+        &mut restore_stream,
+        wire_dtype,
+        args.activation_width,
+        true,
+        prefix.len(),
+        restore_session_id,
+    )
+    .context("export restored state")?;
     let restore_export_ms = elapsed_ms(restore_export_started);
     let restore_decode_started = Instant::now();
     let restored_predicted_token = decode_for_state_handoff(
@@ -1335,6 +1377,7 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         decode_input.as_ref(),
         wire_dtype,
         stage_activation_width,
+        restore_session_id,
     )
     .context("decode restored continuation")?;
     let restore_decode_ms = elapsed_ms(restore_decode_started);
@@ -1344,8 +1387,15 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     let mut cache_hit_matches = predicted_token_matches;
     for _ in 1..args.cache_hit_repeats {
         let import_started = Instant::now();
-        import_state_over_binary(&mut restore_stream, &state_bytes, wire_dtype, true)
-            .context("repeat import state into restore server")?;
+        import_state_over_binary(
+            &mut restore_stream,
+            &state_bytes,
+            wire_dtype,
+            true,
+            prefix.len(),
+            restore_session_id,
+        )
+        .context("repeat import state into restore server")?;
         cache_hit_import_ms.push(elapsed_ms(import_started));
         let decode_started = Instant::now();
         let predicted = decode_for_state_handoff(
@@ -1355,6 +1405,7 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
             decode_input.as_ref(),
             wire_dtype,
             stage_activation_width,
+            restore_session_id,
         )
         .context("repeat decode restored continuation")?;
         cache_hit_decode_ms.push(elapsed_ms(decode_started));
@@ -1362,10 +1413,12 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     }
     write_stage_message(
         &mut restore_stream,
-        &StageWireMessage::stop(wire_dtype),
+        &StageWireMessage::stop_with_identity(wire_dtype, 5, restore_session_id),
         wire_dtype,
     )
     .context("send restore stop")?;
+    drop(restore_stream);
+    drop(restore_guard);
 
     let mut stage_models = Vec::new();
     if let Some(input_resolution) = input_resolution {
@@ -1384,7 +1437,11 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         layer_end: args.state_layer_end,
         include_embeddings,
         include_output,
-        handoff_transport: "binary-control",
+        handoff_transport: if args.external_binary_control {
+            "binary-control-external"
+        } else {
+            "binary-control"
+        },
         state_payload_kind: args.state_payload_kind,
         borrowed_resident_hits: false,
         cached_decoded_result_hits: false,
@@ -2314,6 +2371,7 @@ fn send_prefill_for_state_handoff(
     input: Option<&ActivationFrame>,
     wire_dtype: skippy_protocol::binary::WireActivationDType,
     activation_width: i32,
+    session_id: u64,
 ) -> Result<()> {
     let token_count = i32::try_from(tokens.len()).context("too many prompt tokens")?;
     let mut state = StageStateHeader::new(WireMessageKind::PrefillEmbd, wire_dtype);
@@ -2333,7 +2391,7 @@ fn send_prefill_for_state_handoff(
         token_count,
         state,
         request_id: 1,
-        session_id: 1,
+        session_id,
         sampling: None,
         chat_sampling_metadata: None,
         tokens: tokens.to_vec(),
@@ -2354,8 +2412,13 @@ fn export_state_over_binary(
     wire_dtype: skippy_protocol::binary::WireActivationDType,
     activation_width: i32,
     full_state: bool,
+    prompt_token_count: usize,
+    session_id: u64,
 ) -> Result<Vec<u8>> {
+    let prompt_token_count =
+        i32::try_from(prompt_token_count).context("prompt token count exceeds i32")?;
     let mut state = StageStateHeader::new(WireMessageKind::StateExport, wire_dtype);
+    state.prompt_token_count = prompt_token_count;
     if full_state {
         state.flags |= state_flags::FULL_STATE;
     }
@@ -2365,7 +2428,7 @@ fn export_state_over_binary(
         token_count: 0,
         state,
         request_id: 2,
-        session_id: 1,
+        session_id,
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
@@ -2390,9 +2453,14 @@ fn import_state_over_binary(
     state_bytes: &[u8],
     wire_dtype: skippy_protocol::binary::WireActivationDType,
     full_state: bool,
+    prompt_token_count: usize,
+    session_id: u64,
 ) -> Result<()> {
     let token_count = i32::try_from(state_bytes.len()).context("state payload is too large")?;
+    let prompt_token_count =
+        i32::try_from(prompt_token_count).context("prompt token count exceeds i32")?;
     let mut state = StageStateHeader::new(WireMessageKind::StateImport, wire_dtype);
+    state.prompt_token_count = prompt_token_count;
     if full_state {
         state.flags |= state_flags::FULL_STATE;
     }
@@ -2402,7 +2470,7 @@ fn import_state_over_binary(
         token_count,
         state,
         request_id: 3,
-        session_id: 1,
+        session_id,
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
@@ -2425,6 +2493,7 @@ fn decode_for_state_handoff(
     input: Option<&ActivationFrame>,
     wire_dtype: skippy_protocol::binary::WireActivationDType,
     activation_width: i32,
+    session_id: u64,
 ) -> Result<i32> {
     let mut state = StageStateHeader::new(WireMessageKind::DecodeEmbd, wire_dtype);
     state.prompt_token_count = i32::try_from(pos_start).context("prompt position exceeds i32")?;
@@ -2441,7 +2510,7 @@ fn decode_for_state_handoff(
         token_count: 1,
         state,
         request_id: 4,
-        session_id: 1,
+        session_id,
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
