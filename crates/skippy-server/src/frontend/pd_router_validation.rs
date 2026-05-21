@@ -1,5 +1,10 @@
 use super::*;
 
+use super::pd_chunked_prefill::{
+    PdChunkedPrefillManifestProvenance, PdChunkedPrefillPlan, PdChunkedPrefillSession,
+    PdChunkedPrefillTelemetry, PD_CHUNKED_PREFILL_CAPABILITY, PD_CHUNKED_PREFILL_PROTOCOL_VERSION,
+};
+
 const PD_HANDOFF_PROTOCOL_VERSION: &str = "pd-handoff/1";
 const PD_KV_FORMAT_VERSION: &str = "native-full-state/1";
 const PD_KV_LAYOUT: &str = "llama.cpp-native-full-state";
@@ -25,8 +30,17 @@ struct PdHandoffManifest {
     checksum_algorithm: &'static str,
     prompt_token_count: usize,
     decode_start_position: usize,
+    chunked_prefill: Option<PdChunkedPrefillManifestProvenance>,
+    large_state_framing: Option<PdLargeStateManifestProvenance>,
     total_bytes: u64,
     payload_checksum: String,
+}
+
+#[derive(Debug, Clone)]
+struct PdLargeStateManifestProvenance {
+    protocol_version: &'static str,
+    frame_count: u64,
+    frame_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,20 +60,52 @@ struct PdTiming {
     kv_transfer_network_ms: f64,
     kv_transfer_isolated: bool,
     kv_import_ms: f64,
+    state_payload_bytes: u64,
+    large_state_frame_count: u64,
+    large_state_frame_bytes: u64,
+    large_state_read_ms: f64,
+    large_state_write_ms: f64,
+    large_state_checksum_ms: f64,
     decode_start_ms: f64,
     ttft_ms: f64,
     decode_tokens_per_sec: f64,
+    chunked_prefill: Option<PdChunkedPrefillTelemetry>,
 }
 
 struct PdExportedState {
     bytes: Vec<u8>,
     roundtrip_ms: f64,
     network_read_ms: f64,
+    large_state_frame_count: u64,
+    large_state_frame_bytes: u64,
+    large_state_checksum_ms: f64,
 }
 
+impl PdExportedState {
+    fn large_state_manifest_provenance(&self) -> Option<PdLargeStateManifestProvenance> {
+        if self.large_state_frame_count == 0 {
+            return None;
+        }
+        Some(PdLargeStateManifestProvenance {
+            protocol_version: LARGE_STATE_FRAMING_CAPABILITY,
+            frame_count: self.large_state_frame_count,
+            frame_bytes: self.large_state_frame_bytes,
+        })
+    }
+}
+
+#[derive(Debug)]
 struct PdImportTiming {
     total_ms: f64,
     network_write_ms: f64,
+    large_state_frame_count: u64,
+    large_state_frame_bytes: u64,
+    large_state_checksum_ms: f64,
+}
+
+struct PdPrefillDispatch {
+    total_prefill_ms: f64,
+    chunked_prefill: Option<PdChunkedPrefillTelemetry>,
 }
 
 impl StageOpenAiBackend {
@@ -152,23 +198,16 @@ impl StageOpenAiBackend {
         )?;
 
         let result = (|| {
-            if prefill_token_count > 0 {
-                let prefill_timer = PhaseTimer::start();
-                send_prefill_chunk(
-                    &mut source_stream,
-                    request.config.wire_dtype,
-                    OpenAiPrefillChunk {
-                        seq_id: 0,
-                        pos_start: 0,
-                        prefill_token_count,
-                        tokens: &request.prompt_token_ids[..prefill_token_count],
-                        request_id: request.ids.request_id,
-                        session_id: source_session_id,
-                    },
-                )
-                .map_err(openai_backend_error)?;
-                timing.prefill_dispatch_ms = prefill_timer.elapsed_ms();
-            }
+            let prefill_dispatch = dispatch_pd_prefill(
+                &mut source_stream,
+                request.config,
+                request.prompt_token_ids,
+                prefill_token_count,
+                request.ids.request_id,
+                source_session_id,
+            )?;
+            timing.prefill_dispatch_ms = prefill_dispatch.total_prefill_ms;
+            timing.chunked_prefill = prefill_dispatch.chunked_prefill;
 
             let exported = export_full_state_over_binary(
                 &mut source_stream,
@@ -180,11 +219,21 @@ impl StageOpenAiBackend {
             timing.kv_export_roundtrip_ms = exported.roundtrip_ms;
             timing.kv_network_read_ms = exported.network_read_ms;
             timing.kv_export_ms = (exported.roundtrip_ms - exported.network_read_ms).max(0.0);
+            timing.state_payload_bytes = exported.bytes.len() as u64;
+            timing.large_state_frame_count = exported.large_state_frame_count;
+            timing.large_state_frame_bytes = exported.large_state_frame_bytes;
+            timing.large_state_read_ms = exported.network_read_ms;
+            timing.large_state_checksum_ms = exported.large_state_checksum_ms;
 
             let mut manifest = build_pd_handoff_manifest(
                 request.config,
                 request.ids,
                 prefill_token_count,
+                timing
+                    .chunked_prefill
+                    .as_ref()
+                    .map(|chunked| chunked.provenance.clone()),
+                exported.large_state_manifest_provenance(),
                 &exported.bytes,
             );
             apply_pd_manifest_test_fault(request.config, &mut manifest);
@@ -223,6 +272,14 @@ impl StageOpenAiBackend {
                 timing.kv_network_write_ms = import_timing.network_write_ms;
                 timing.kv_import_ms =
                     (import_timing.total_ms - import_timing.network_write_ms).max(0.0);
+                timing.large_state_frame_count = timing
+                    .large_state_frame_count
+                    .max(import_timing.large_state_frame_count);
+                timing.large_state_frame_bytes = timing
+                    .large_state_frame_bytes
+                    .max(import_timing.large_state_frame_bytes);
+                timing.large_state_write_ms = import_timing.network_write_ms;
+                timing.large_state_checksum_ms += import_timing.large_state_checksum_ms;
                 timing.kv_transfer_network_ms =
                     timing.kv_network_read_ms + timing.kv_network_write_ms;
                 timing.kv_transfer_ms = timing.kv_transfer_network_ms;
@@ -490,6 +547,93 @@ fn merge_pd_stop_result<T>(
     }
 }
 
+fn dispatch_pd_prefill(
+    source_stream: &mut TcpStream,
+    config: &PdRouterValidationConfig,
+    prompt_token_ids: &[i32],
+    prefill_token_count: usize,
+    request_id: u64,
+    session_id: u64,
+) -> OpenAiResult<PdPrefillDispatch> {
+    if prefill_token_count == 0 {
+        return Ok(PdPrefillDispatch {
+            total_prefill_ms: 0.0,
+            chunked_prefill: None,
+        });
+    }
+
+    if let Some(chunked_config) = config.chunked_prefill {
+        let plan =
+            PdChunkedPrefillPlan::new(prefill_token_count, chunked_config).map_err(|error| {
+                OpenAiError::backend(format!("PD chunked prefill planning failed: {error}"))
+            })?;
+        let mut session = PdChunkedPrefillSession::new(plan.clone());
+        let total_timer = PhaseTimer::start();
+        let mut chunk_prefill_ms = Vec::with_capacity(plan.chunks.len());
+        for chunk in &plan.chunks {
+            let chunk_timer = PhaseTimer::start();
+            let send_result = send_prefill_chunk(
+                source_stream,
+                config.wire_dtype,
+                OpenAiPrefillChunk {
+                    seq_id: chunk.index,
+                    pos_start: chunk.start_position,
+                    prefill_token_count: chunk.token_count,
+                    tokens: &prompt_token_ids[chunk.start_position..chunk.end_position],
+                    request_id,
+                    session_id,
+                },
+            );
+            match send_result {
+                Ok(()) => {
+                    chunk_prefill_ms.push(chunk_timer.elapsed_ms());
+                    session.acknowledge(*chunk).map_err(|error| {
+                        OpenAiError::backend(format!(
+                            "PD chunked prefill ACK validation failed: {error}"
+                        ))
+                    })?;
+                }
+                Err(error) => {
+                    session.error_chunk();
+                    return Err(openai_backend_error(error));
+                }
+            }
+        }
+        let total_prefill_ms = total_timer.elapsed_ms();
+        if !session.can_export() {
+            session.error_chunk();
+            return Err(OpenAiError::backend(
+                "PD chunked prefill did not reach final export gate",
+            ));
+        }
+        let chunked_prefill =
+            PdChunkedPrefillTelemetry::from_plan(&plan, chunk_prefill_ms, total_prefill_ms);
+        Ok(PdPrefillDispatch {
+            total_prefill_ms,
+            chunked_prefill: Some(chunked_prefill),
+        })
+    } else {
+        let prefill_timer = PhaseTimer::start();
+        send_prefill_chunk(
+            source_stream,
+            config.wire_dtype,
+            OpenAiPrefillChunk {
+                seq_id: 0,
+                pos_start: 0,
+                prefill_token_count,
+                tokens: &prompt_token_ids[..prefill_token_count],
+                request_id,
+                session_id,
+            },
+        )
+        .map_err(openai_backend_error)?;
+        Ok(PdPrefillDispatch {
+            total_prefill_ms: prefill_timer.elapsed_ms(),
+            chunked_prefill: None,
+        })
+    }
+}
+
 fn insert_pd_timing_attrs(
     attrs: &mut BTreeMap<String, Value>,
     manifest: &PdHandoffManifest,
@@ -498,6 +642,46 @@ fn insert_pd_timing_attrs(
     attrs.insert(
         "pd.kv_payload_bytes".to_string(),
         json!(manifest.total_bytes),
+    );
+    attrs.insert(
+        "pd.state_payload_bytes".to_string(),
+        json!(timing.state_payload_bytes.max(manifest.total_bytes)),
+    );
+    attrs.insert(
+        "pd.large_state_framing.enabled".to_string(),
+        json!(timing.large_state_frame_count > 0),
+    );
+    attrs.insert(
+        "pd.large_state_framing.protocol".to_string(),
+        json!(LARGE_STATE_FRAMING_CAPABILITY),
+    );
+    attrs.insert(
+        "pd.large_state.frame_count".to_string(),
+        json!(timing.large_state_frame_count),
+    );
+    attrs.insert(
+        "pd.large_state.frame_bytes".to_string(),
+        json!(timing.large_state_frame_bytes),
+    );
+    attrs.insert(
+        "pd.large_state.write_ms".to_string(),
+        json!(timing.large_state_write_ms),
+    );
+    attrs.insert(
+        "pd.large_state.read_ms".to_string(),
+        json!(timing.large_state_read_ms),
+    );
+    attrs.insert(
+        "pd.large_state.checksum_ms".to_string(),
+        json!(timing.large_state_checksum_ms),
+    );
+    attrs.insert(
+        "pd.large_state.result".to_string(),
+        json!(if timing.large_state_frame_count > 0 {
+            "framed"
+        } else {
+            "legacy"
+        }),
     );
     attrs.insert("pd.kv_export_ms".to_string(), json!(timing.kv_export_ms));
     attrs.insert(
@@ -534,6 +718,52 @@ fn insert_pd_timing_attrs(
         json!(timing.prefill_dispatch_ms),
     );
     attrs.insert(
+        "pd.chunked_prefill.enabled".to_string(),
+        json!(timing.chunked_prefill.is_some()),
+    );
+    if let Some(chunked) = &timing.chunked_prefill {
+        attrs.insert(
+            "pd.chunked_prefill.protocol_version".to_string(),
+            json!(chunked.provenance.protocol_version),
+        );
+        attrs.insert(
+            "pd.chunked_prefill.capability".to_string(),
+            json!(chunked.provenance.capability),
+        );
+        attrs.insert(
+            "pd.chunk_count".to_string(),
+            json!(chunked.provenance.chunk_count),
+        );
+        attrs.insert(
+            "pd.prefill.chunk_size".to_string(),
+            json!(chunked.provenance.chunk_size),
+        );
+        attrs.insert(
+            "pd.chunk_tokens".to_string(),
+            json!(chunked.bounded_chunk_tokens()),
+        );
+        attrs.insert(
+            "pd.chunk_tokens_truncated".to_string(),
+            json!(chunked.chunk_tokens_truncated()),
+        );
+        attrs.insert(
+            "pd.chunk_prefill_ms".to_string(),
+            json!(chunked.bounded_chunk_prefill_ms()),
+        );
+        attrs.insert(
+            "pd.chunk_prefill_ms_truncated".to_string(),
+            json!(chunked.chunk_prefill_ms_truncated()),
+        );
+        attrs.insert(
+            "pd.total_prefill_ms".to_string(),
+            json!(chunked.total_prefill_ms),
+        );
+        attrs.insert(
+            "pd.final_decode_start_position".to_string(),
+            json!(chunked.provenance.final_decode_start_position),
+        );
+    }
+    attrs.insert(
         "pd.decode_start_ms".to_string(),
         json!(timing.decode_start_ms),
     );
@@ -548,6 +778,8 @@ fn build_pd_handoff_manifest(
     config: &PdRouterValidationConfig,
     ids: &OpenAiGenerationIds,
     prompt_token_count: usize,
+    chunked_prefill: Option<PdChunkedPrefillManifestProvenance>,
+    large_state_framing: Option<PdLargeStateManifestProvenance>,
     payload: &[u8],
 ) -> PdHandoffManifest {
     PdHandoffManifest {
@@ -568,6 +800,8 @@ fn build_pd_handoff_manifest(
         checksum_algorithm: PD_CHECKSUM_ALGORITHM,
         prompt_token_count,
         decode_start_position: prompt_token_count,
+        chunked_prefill,
+        large_state_framing,
         total_bytes: payload.len() as u64,
         payload_checksum: sha256_hex(payload),
     }
@@ -652,7 +886,89 @@ fn validate_pd_handoff_manifest(
             return Err(PdManifestError { field });
         }
     }
+    validate_pd_large_state_framing_provenance(manifest)?;
+    validate_pd_chunked_prefill_provenance(manifest, config)?;
     Ok(())
+}
+
+fn validate_pd_large_state_framing_provenance(
+    manifest: &PdHandoffManifest,
+) -> Result<(), PdManifestError> {
+    let Some(large_state) = manifest.large_state_framing.as_ref() else {
+        return Ok(());
+    };
+    let checks = [
+        (
+            large_state.protocol_version == LARGE_STATE_FRAMING_CAPABILITY,
+            "large_state_framing.protocol_version",
+        ),
+        (
+            large_state.frame_count > 0,
+            "large_state_framing.frame_count",
+        ),
+        (
+            large_state.frame_bytes > 0,
+            "large_state_framing.frame_bytes",
+        ),
+    ];
+    for (ok, field) in checks {
+        if !ok {
+            return Err(PdManifestError { field });
+        }
+    }
+    Ok(())
+}
+
+fn validate_pd_chunked_prefill_provenance(
+    manifest: &PdHandoffManifest,
+    config: &PdRouterValidationConfig,
+) -> Result<(), PdManifestError> {
+    match (config.chunked_prefill, manifest.chunked_prefill.as_ref()) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(PdManifestError {
+            field: "chunked_prefill",
+        }),
+        (Some(_), None) if manifest.prompt_token_count == 0 => Ok(()),
+        (Some(_), None) => Err(PdManifestError {
+            field: "chunked_prefill",
+        }),
+        (Some(chunked_config), Some(provenance)) => {
+            let checks = [
+                (provenance.chunked_prefill, "chunked_prefill"),
+                (
+                    provenance.protocol_version == PD_CHUNKED_PREFILL_PROTOCOL_VERSION,
+                    "chunked_prefill.protocol_version",
+                ),
+                (
+                    provenance.capability == PD_CHUNKED_PREFILL_CAPABILITY,
+                    "chunked_prefill.capability",
+                ),
+                (provenance.chunk_count > 0, "chunked_prefill.chunk_count"),
+                (
+                    provenance.chunk_size > 0 && provenance.chunk_size <= chunked_config.chunk_size,
+                    "chunked_prefill.chunk_size",
+                ),
+                (
+                    provenance.chunk_size <= chunked_config.max_prefill_batch,
+                    "chunked_prefill.max_prefill_batch",
+                ),
+                (
+                    provenance.total_prefill_tokens == manifest.prompt_token_count,
+                    "chunked_prefill.total_prefill_tokens",
+                ),
+                (
+                    provenance.final_decode_start_position == manifest.decode_start_position,
+                    "chunked_prefill.final_decode_start_position",
+                ),
+            ];
+            for (ok, field) in checks {
+                if !ok {
+                    return Err(PdManifestError { field });
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 fn export_full_state_over_binary(
@@ -666,6 +982,7 @@ fn export_full_state_over_binary(
     state.prompt_token_count = i32::try_from(prompt_token_count)
         .map_err(|_| OpenAiError::backend("prompt token count exceeds i32"))?;
     state.flags |= state_flags::FULL_STATE;
+    state.flags |= state_flags::LARGE_STATE_FRAMING;
     let message = StageWireMessage {
         kind: WireMessageKind::StateExport,
         pos_start: 0,
@@ -700,6 +1017,9 @@ fn export_full_state_over_binary(
         bytes: reply.raw_bytes,
         roundtrip_ms,
         network_read_ms: read_timing.raw_payload_ms,
+        large_state_frame_count: read_timing.large_state_frame_count,
+        large_state_frame_bytes: read_timing.large_state_frame_bytes,
+        large_state_checksum_ms: read_timing.large_state_checksum_ms,
     })
 }
 
@@ -715,11 +1035,11 @@ fn import_full_state_over_binary(
     state.prompt_token_count = i32::try_from(prompt_token_count)
         .map_err(|_| OpenAiError::backend("prompt token count exceeds i32"))?;
     state.flags |= state_flags::FULL_STATE;
+    state.flags |= state_flags::LARGE_STATE_FRAMING;
     let message = StageWireMessage {
         kind: WireMessageKind::StateImport,
         pos_start: 0,
-        token_count: i32::try_from(payload.len())
-            .map_err(|_| OpenAiError::backend("PD state payload exceeds i32"))?,
+        token_count: 0,
         state,
         request_id,
         session_id,
@@ -731,8 +1051,13 @@ fn import_full_state_over_binary(
         raw_bytes: payload.to_vec(),
     };
     let import_timer = PhaseTimer::start();
-    let write_timing =
-        write_stage_message_timed(&mut *stream, &message, wire_dtype).map_err(openai_io_error)?;
+    let write_timing = write_state_import_message_timed(
+        &mut *stream,
+        &message,
+        wire_dtype,
+        LargeStateFramingOptions::enabled(),
+    )
+    .map_err(openai_io_error)?;
     let reply = recv_reply(&mut *stream).map_err(openai_io_error)?;
     if reply.kind != WireReplyKind::Ack {
         return Err(OpenAiError::backend(format!(
@@ -743,6 +1068,9 @@ fn import_full_state_over_binary(
     Ok(PdImportTiming {
         total_ms: import_timer.elapsed_ms(),
         network_write_ms: write_timing.raw_payload_ms,
+        large_state_frame_count: write_timing.large_state_frame_count,
+        large_state_frame_bytes: write_timing.large_state_frame_bytes,
+        large_state_checksum_ms: write_timing.large_state_checksum_ms,
     })
 }
 
@@ -853,6 +1181,7 @@ mod tests {
             fault_injection: PdRouterValidationFault::None,
             mvp_test_fault: PdServingMvpTestFault::None,
             admission: None,
+            chunked_prefill: None,
         }
     }
 
@@ -861,7 +1190,7 @@ mod tests {
         let config = config();
         let ids = OpenAiGenerationIds::new(OpenAiCacheHints::default());
         let payload = b"native state bytes";
-        let manifest = build_pd_handoff_manifest(&config, &ids, 8, payload);
+        let manifest = build_pd_handoff_manifest(&config, &ids, 8, None, None, payload);
 
         validate_pd_handoff_manifest(&manifest, &config, payload).unwrap();
         assert_eq!(manifest.protocol_version, PD_HANDOFF_PROTOCOL_VERSION);
@@ -874,7 +1203,7 @@ mod tests {
         let config = config();
         let ids = OpenAiGenerationIds::new(OpenAiCacheHints::default());
         let payload = b"native state bytes";
-        let manifest = build_pd_handoff_manifest(&config, &ids, 8, payload);
+        let manifest = build_pd_handoff_manifest(&config, &ids, 8, None, None, payload);
 
         let mut bad_artifact = manifest.clone();
         bad_artifact.model_artifact_sha256 =
@@ -903,6 +1232,60 @@ mod tests {
                 .field,
             "decode_start_position"
         );
+    }
+
+    #[test]
+    fn pd_handoff_manifest_binds_large_state_framing_metadata() {
+        let config = config();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::default());
+        let payload = b"native state bytes";
+        let large_state = Some(PdLargeStateManifestProvenance {
+            protocol_version: LARGE_STATE_FRAMING_CAPABILITY,
+            frame_count: 3,
+            frame_bytes: 1024,
+        });
+        let manifest = build_pd_handoff_manifest(&config, &ids, 8, None, large_state, payload);
+
+        validate_pd_handoff_manifest(&manifest, &config, payload).unwrap();
+
+        let mut bad = manifest;
+        bad.large_state_framing.as_mut().unwrap().frame_count = 0;
+        assert_eq!(
+            validate_pd_handoff_manifest(&bad, &config, payload)
+                .unwrap_err()
+                .field,
+            "large_state_framing.frame_count"
+        );
+    }
+
+    #[test]
+    fn pd_import_failure_after_valid_transfer_fails_closed() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (message, timing) = read_stage_message_timed(&mut stream, 0).unwrap();
+            assert_eq!(message.kind, WireMessageKind::StateImport);
+            assert_eq!(message.raw_bytes, b"native state bytes");
+            assert_eq!(timing.large_state_frame_count, 0);
+            skippy_protocol::binary::send_reply_predicted(&mut stream, 13).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let error = import_full_state_over_binary(
+            &mut stream,
+            WireActivationDType::F16,
+            b"native state bytes",
+            8,
+            31,
+            37,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("expected PD state import ACK"),
+            "{error:?}"
+        );
+        server.join().unwrap();
     }
 
     #[test]
@@ -973,7 +1356,7 @@ mod tests {
         config.mvp_test_fault = PdServingMvpTestFault::ManifestMismatch;
         let ids = OpenAiGenerationIds::new(OpenAiCacheHints::default());
         let payload = b"native state bytes";
-        let mut manifest = build_pd_handoff_manifest(&config, &ids, 8, payload);
+        let mut manifest = build_pd_handoff_manifest(&config, &ids, 8, None, None, payload);
 
         assert!(config.inject_manifest_mismatch());
         apply_pd_manifest_test_fault(&config, &mut manifest);
@@ -1044,7 +1427,12 @@ mod tests {
         let config = config();
         let ids = OpenAiGenerationIds::new(OpenAiCacheHints::default());
         let payload = b"native state bytes that must not appear in telemetry";
-        let manifest = build_pd_handoff_manifest(&config, &ids, 8, payload);
+        let large_state = Some(PdLargeStateManifestProvenance {
+            protocol_version: LARGE_STATE_FRAMING_CAPABILITY,
+            frame_count: 3,
+            frame_bytes: 1024,
+        });
+        let manifest = build_pd_handoff_manifest(&config, &ids, 8, None, large_state, payload);
         let timing = PdTiming {
             router_overhead_ms: 10.0,
             prefill_dispatch_ms: 1.0,
@@ -1056,15 +1444,31 @@ mod tests {
             kv_transfer_network_ms: 11.0,
             kv_transfer_isolated: true,
             kv_import_ms: 7.0,
+            state_payload_bytes: payload.len() as u64,
+            large_state_frame_count: 3,
+            large_state_frame_bytes: 1024,
+            large_state_read_ms: 5.0,
+            large_state_write_ms: 6.0,
+            large_state_checksum_ms: 1.5,
             decode_start_ms: 8.0,
             ttft_ms: 9.0,
             decode_tokens_per_sec: 10.0,
+            chunked_prefill: None,
         };
         let mut attrs = BTreeMap::new();
         insert_pd_timing_attrs(&mut attrs, &manifest, &timing);
 
         for key in [
             "pd.kv_payload_bytes",
+            "pd.state_payload_bytes",
+            "pd.large_state_framing.enabled",
+            "pd.large_state_framing.protocol",
+            "pd.large_state.frame_count",
+            "pd.large_state.frame_bytes",
+            "pd.large_state.write_ms",
+            "pd.large_state.read_ms",
+            "pd.large_state.checksum_ms",
+            "pd.large_state.result",
             "pd.kv_export_ms",
             "pd.kv_export_roundtrip_ms",
             "pd.kv_transfer_ms",
@@ -1075,6 +1479,7 @@ mod tests {
             "pd.kv_import_ms",
             "pd.router_overhead_ms",
             "pd.prefill_dispatch_ms",
+            "pd.chunked_prefill.enabled",
             "pd.decode_start_ms",
             "pd.ttft_ms",
             "pd.decode_tokens_per_sec",
@@ -1086,5 +1491,89 @@ mod tests {
         assert!(!serialized.contains("native state bytes"));
         assert!(!serialized.contains("token array"));
         assert!(!serialized.contains("/Users/"));
+    }
+
+    #[test]
+    fn pd_chunked_manifest_provenance_validates_and_rejects_mismatch() {
+        let mut config = config();
+        config.mode = PdServingMode::Mvp;
+        config.chunked_prefill = Some(PdChunkedPrefillConfig::new(1800, 1800).unwrap());
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::default());
+        let payload = b"native state bytes";
+        let plan = PdChunkedPrefillPlan::new(4000, config.chunked_prefill.unwrap()).unwrap();
+        let manifest =
+            build_pd_handoff_manifest(&config, &ids, 4000, Some(plan.provenance()), None, payload);
+
+        validate_pd_handoff_manifest(&manifest, &config, payload).unwrap();
+
+        let mut bad = manifest.clone();
+        bad.chunked_prefill
+            .as_mut()
+            .unwrap()
+            .final_decode_start_position = 3999;
+        assert_eq!(
+            validate_pd_handoff_manifest(&bad, &config, payload)
+                .unwrap_err()
+                .field,
+            "chunked_prefill.final_decode_start_position"
+        );
+
+        let mut no_capability_config = config;
+        no_capability_config.chunked_prefill = None;
+        assert_eq!(
+            validate_pd_handoff_manifest(&manifest, &no_capability_config, payload)
+                .unwrap_err()
+                .field,
+            "chunked_prefill"
+        );
+    }
+
+    #[test]
+    fn pd_chunked_timing_attrs_are_required_and_sanitized() {
+        let config = config();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::default());
+        let payload = b"native state bytes that must not appear in telemetry";
+        let chunked_config = PdChunkedPrefillConfig::new(1800, 1800).unwrap();
+        let plan = PdChunkedPrefillPlan::new(4000, chunked_config).unwrap();
+        let chunked = PdChunkedPrefillTelemetry::from_plan(&plan, vec![1.0, 2.0, 3.0], 6.0);
+        let manifest = build_pd_handoff_manifest(
+            &config,
+            &ids,
+            4000,
+            Some(chunked.provenance.clone()),
+            None,
+            payload,
+        );
+        let timing = PdTiming {
+            prefill_dispatch_ms: 6.0,
+            chunked_prefill: Some(chunked),
+            ..PdTiming::default()
+        };
+        let mut attrs = BTreeMap::new();
+        insert_pd_timing_attrs(&mut attrs, &manifest, &timing);
+
+        for key in [
+            "pd.chunked_prefill.enabled",
+            "pd.chunked_prefill.protocol_version",
+            "pd.chunked_prefill.capability",
+            "pd.chunk_count",
+            "pd.prefill.chunk_size",
+            "pd.chunk_tokens",
+            "pd.chunk_tokens_truncated",
+            "pd.chunk_prefill_ms",
+            "pd.chunk_prefill_ms_truncated",
+            "pd.total_prefill_ms",
+            "pd.final_decode_start_position",
+        ] {
+            assert!(attrs.contains_key(key), "missing {key}");
+        }
+        assert_eq!(attrs["pd.chunk_tokens"], json!([1800, 1800, 400]));
+        assert_eq!(attrs["pd.final_decode_start_position"], json!(4000));
+
+        let serialized = serde_json::to_string(&attrs).unwrap();
+        assert!(!serialized.contains("native state bytes"));
+        assert!(!serialized.contains("token array"));
+        assert!(!serialized.contains("/Users/"));
+        assert!(!serialized.contains("127.0.0.1"));
     }
 }

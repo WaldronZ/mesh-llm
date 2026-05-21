@@ -1463,6 +1463,61 @@ fn pd_serving_mvp_config_accepts_explicit_fields() {
 }
 
 #[test]
+fn pd_serving_mvp_config_accepts_chunked_prefill_capability() {
+    use clap::Parser as _;
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-max-prompt-tokens",
+        "8192",
+        "--pd-max-prefill-batch",
+        "1800",
+        "--pd-max-ctx-size",
+        "8192",
+        "--pd-max-handoff-bytes",
+        "8589934592",
+        "--pd-estimated-kv-bytes-per-token",
+        "902000",
+        "--pd-chunked-prefill",
+        "--pd-prefill-chunk-size",
+        "1800",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let config = pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap();
+    let admission = config.admission.expect("mvp admission policy");
+
+    assert_eq!(
+        admission.chunked_prefill,
+        Some(PdChunkedPrefillConfig::new(1800, 1800).unwrap())
+    );
+    assert_eq!(
+        config.chunked_prefill,
+        Some(PdChunkedPrefillConfig::new(1800, 1800).unwrap())
+    );
+    assert!(admission.evaluate(4000, 32).should_start_prefill());
+}
+
+#[test]
 fn pd_serving_mvp_config_requires_admission_policy() {
     use clap::Parser as _;
 
@@ -1575,7 +1630,9 @@ fn pd_serving_status_is_sanitized_and_additive() {
             estimated_kv_bytes_per_token: Some(902_000),
             kv_bytes_per_token_source: PdKvBytesPerTokenSource::Configured,
             over_limit_action: crate::cli::PdAdmissionOverLimitAction::Fallback,
+            chunked_prefill: None,
         }),
+        chunked_prefill: None,
     };
     let status = pd_serving_status_for_start(&config, 1);
     let serialized = serde_json::to_value(&status).unwrap();
@@ -1596,6 +1653,7 @@ fn pd_serving_status_is_sanitized_and_additive() {
         serialized["effective_prompt_limit_without_generation"],
         1190
     );
+    assert_eq!(serialized["chunked_prefill_enabled"], false);
     let serialized = serialized.to_string();
     assert!(!serialized.contains("private-prefill-host"));
     assert!(!serialized.contains("private-decode-host"));

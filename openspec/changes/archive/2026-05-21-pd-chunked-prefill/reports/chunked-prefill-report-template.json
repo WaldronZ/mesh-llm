@@ -1,0 +1,75 @@
+{
+  "result": "pass | fail | inconclusive",
+  "recommendation": "proceed_to_next_scale | redesign | run_more_validation",
+  "scope": "4k/8k chunked prefill foreground smoke",
+  "privacy": {
+    "prompt_text_recorded": false,
+    "complete_token_arrays_recorded": false,
+    "generated_content_recorded": false,
+    "kv_payload_recorded": false,
+    "credentials_recorded": false,
+    "private_paths_recorded": false,
+    "endpoint_urls_recorded": false,
+    "real_machine_labels_recorded": false
+  },
+  "environment": {
+    "mac_binary_sha256": "<sha256>",
+    "pgx_binary_sha256": "<sha256>",
+    "model_artifact_sha256": "<sha256>",
+    "tokenizer_metadata_hash": "<sha256>",
+    "chat_template_hash": "<sha256>"
+  },
+  "prompt_suite": [
+    {
+      "prompt_id": "baseline-safe",
+      "target_class": "baseline",
+      "token_count": null,
+      "expected_admission": "admitted",
+      "observed_admission": null
+    },
+    {
+      "prompt_id": "chunked-4k",
+      "target_class": "4k",
+      "token_count": null,
+      "expected_admission": "admitted",
+      "observed_admission": null
+    },
+    {
+      "prompt_id": "chunked-8k",
+      "target_class": "8k",
+      "token_count": null,
+      "expected_admission": "admitted",
+      "observed_admission": null
+    },
+    {
+      "prompt_id": "over-policy",
+      "target_class": "over-policy",
+      "token_count": null,
+      "expected_admission": "reject_or_fallback_before_pgx",
+      "observed_admission": null
+    }
+  ],
+  "metrics": {
+    "chunk_size": null,
+    "chunk_count": null,
+    "chunk_tokens_bounded": [],
+    "chunk_prefill_ms_bounded": [],
+    "total_prefill_ms": null,
+    "final_decode_start_position": null,
+    "kv_payload_bytes": null,
+    "kv_export_ms": null,
+    "kv_transfer_network_ms": null,
+    "kv_import_ms": null,
+    "ttft_ms": null,
+    "decode_tokens_per_sec": null
+  },
+  "cleanup": {
+    "over_policy_before_pgx": null,
+    "chunk_error_fail_closed": null,
+    "timeout_cleanup": null,
+    "cancel_cleanup": null,
+    "pgx_process_survived": null,
+    "ports_released": null
+  },
+  "failure_reason": null
+}

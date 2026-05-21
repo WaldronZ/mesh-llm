@@ -1,0 +1,44 @@
+{
+  "result": "pass | fail | inconclusive",
+  "recommendation": "rerun_4k | proceed_to_8k | redesign | run_more_validation",
+  "scope": "local framing validation and optional authorized 4k foreground smoke",
+  "local_validation": {
+    "small_payload_legacy_state_import": null,
+    "capability_missing_fail_closed": null,
+    "framed_payload_round_trip": null,
+    "truncated_frame_fail_closed": null,
+    "checksum_mismatch_fail_closed": null,
+    "out_of_order_frame_fail_closed": null,
+    "manifest_large_state_provenance": null,
+    "telemetry_privacy": null
+  },
+  "large_state_metrics": {
+    "state_payload_bytes": null,
+    "frame_count": null,
+    "frame_bytes": null,
+    "write_ms": null,
+    "read_ms": null,
+    "checksum_ms": null,
+    "result": null
+  },
+  "foreground_4k_smoke": {
+    "authorized": false,
+    "ran": false,
+    "manifest_validated": null,
+    "mac_import_decode": null,
+    "sse_completed": null,
+    "processes_survived": null,
+    "ports_released": null
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "complete_token_arrays_recorded": false,
+    "generated_content_recorded": false,
+    "kv_or_native_state_payload_recorded": false,
+    "credentials_recorded": false,
+    "private_paths_recorded": false,
+    "endpoint_urls_recorded": false,
+    "real_machine_labels_recorded": false
+  },
+  "failure_reason": null
+}

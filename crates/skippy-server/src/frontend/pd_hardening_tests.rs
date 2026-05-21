@@ -28,7 +28,9 @@ fn mvp_config() -> PdRouterValidationConfig {
             estimated_kv_bytes_per_token: Some(902_000),
             kv_bytes_per_token_source: PdKvBytesPerTokenSource::Configured,
             over_limit_action: PdAdmissionOverLimitAction::Fallback,
+            chunked_prefill: None,
         }),
+        chunked_prefill: None,
     }
 }
 

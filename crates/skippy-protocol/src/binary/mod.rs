@@ -10,15 +10,19 @@ pub use activation::{
 pub use codec::{
     read_stage_message, read_stage_message_timed, recv_ready, recv_reply, send_ready,
     send_reply_ack, send_reply_ack_with_stats, send_reply_predicted,
-    send_reply_predicted_tokens_with_stats, send_reply_predicted_with_stats, write_stage_message,
-    write_stage_message_timed, StageMessageReadTiming, StageMessageWriteTiming,
+    send_reply_predicted_tokens_with_stats, send_reply_predicted_with_stats,
+    state_import_framing_kind_for_len, write_stage_message, write_stage_message_timed,
+    write_state_import_message_timed, LargeStateFramingOptions, StageMessageReadTiming,
+    StageMessageWriteTiming, StateImportFramingKind,
 };
 pub use types::{
     activation_frame_flags_from_state_flags, activation_state_flags_from_frame_flags, state_flags,
     StageLogitBias, StageReply, StageReplyStats, StageSamplingConfig, StageStateHeader,
     StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, WireStagePhase,
-    ACTIVATION_FLAG_GEMMA3N_ALTUP, ACTIVATION_FLAG_RWKV7_V_FIRST, LLAMA_TOKEN_NULL,
-    MAX_STAGE_LOGIT_BIAS, READY_MAGIC, STAGE_LOGIT_BIAS_WIRE_BYTES,
+    ACTIVATION_FLAG_GEMMA3N_ALTUP, ACTIVATION_FLAG_RWKV7_V_FIRST, DEFAULT_LARGE_STATE_FRAME_BYTES,
+    LARGE_STATE_FRAMING_CAPABILITY, LARGE_STATE_FRAMING_PROTOCOL_VERSION,
+    LEGACY_STATE_IMPORT_MAX_BYTES, LLAMA_TOKEN_NULL, MAX_LARGE_STATE_FRAME_BYTES,
+    MAX_LARGE_STATE_PAYLOAD_BYTES, MAX_STAGE_LOGIT_BIAS, READY_MAGIC, STAGE_LOGIT_BIAS_WIRE_BYTES,
     STAGE_SAMPLING_CONFIG_BASE_BYTES, STAGE_STATE_HEADER_BYTES, STAGE_STATE_VERSION,
     STAGE_WIRE_FIXED_HEADER_BYTES,
 };
@@ -311,6 +315,170 @@ mod tests {
         assert_eq!(decoded.raw_bytes, vec![1, 2, 3, 4]);
         assert!(read_timing.total_ms >= read_timing.raw_payload_ms);
         assert!(read_timing.total_ms >= read_timing.header_ms);
+    }
+
+    #[test]
+    fn state_import_framing_kind_preserves_legacy_limit() {
+        assert_eq!(
+            state_import_framing_kind_for_len(
+                LEGACY_STATE_IMPORT_MAX_BYTES - 1,
+                LargeStateFramingOptions::disabled()
+            )
+            .unwrap(),
+            StateImportFramingKind::Legacy
+        );
+        assert!(state_import_framing_kind_for_len(
+            LEGACY_STATE_IMPORT_MAX_BYTES + 1,
+            LargeStateFramingOptions::disabled()
+        )
+        .is_err());
+        assert_eq!(
+            state_import_framing_kind_for_len(
+                LEGACY_STATE_IMPORT_MAX_BYTES + 1,
+                LargeStateFramingOptions::enabled()
+            )
+            .unwrap(),
+            StateImportFramingKind::Large
+        );
+    }
+
+    #[test]
+    fn large_state_import_frames_round_trip_over_configured_threshold() {
+        let mut state =
+            StageStateHeader::new(WireMessageKind::StateImport, WireActivationDType::F16);
+        state.flags |= state_flags::LARGE_STATE_FRAMING;
+        let message = StageWireMessage {
+            kind: WireMessageKind::StateImport,
+            pos_start: 0,
+            token_count: 0,
+            state,
+            request_id: 31,
+            session_id: 37,
+            sampling: None,
+            chat_sampling_metadata: None,
+            tokens: Vec::new(),
+            positions: Vec::new(),
+            activation: Vec::new(),
+            raw_bytes: vec![1, 2, 3, 4, 5],
+        };
+        let options = LargeStateFramingOptions::enabled()
+            .with_threshold_bytes(3)
+            .with_max_frame_bytes(2);
+        let mut bytes = Vec::new();
+        let write_timing = write_state_import_message_timed(
+            &mut bytes,
+            &message,
+            WireActivationDType::F16,
+            options,
+        )
+        .unwrap();
+        assert_eq!(i32::from_le_bytes(bytes[0..4].try_into().unwrap()), 20);
+        assert_eq!(write_timing.large_state_frame_count, 3);
+        assert_eq!(write_timing.large_state_frame_bytes, 2);
+        assert_eq!(write_timing.large_state_payload_bytes, 5);
+
+        let (decoded, read_timing) = read_stage_message_timed(Cursor::new(bytes), 2048).unwrap();
+        assert_eq!(decoded.kind, WireMessageKind::StateImport);
+        assert_eq!(decoded.raw_bytes, vec![1, 2, 3, 4, 5]);
+        assert_eq!(decoded.request_id, 31);
+        assert_eq!(decoded.session_id, 37);
+        assert_eq!(decoded.state.dtype().unwrap(), WireActivationDType::F16);
+        assert_eq!(read_timing.large_state_frame_count, 3);
+        assert_eq!(read_timing.large_state_frame_bytes, 2);
+        assert_eq!(read_timing.large_state_payload_bytes, 5);
+    }
+
+    #[test]
+    fn large_state_import_requires_capability_flag() {
+        let state = StageStateHeader::new(WireMessageKind::StateImport, WireActivationDType::F16);
+        let message = StageWireMessage {
+            kind: WireMessageKind::StateImport,
+            pos_start: 0,
+            token_count: 0,
+            state,
+            request_id: 31,
+            session_id: 37,
+            sampling: None,
+            chat_sampling_metadata: None,
+            tokens: Vec::new(),
+            positions: Vec::new(),
+            activation: Vec::new(),
+            raw_bytes: vec![1, 2, 3, 4, 5],
+        };
+        let options = LargeStateFramingOptions::enabled()
+            .with_threshold_bytes(3)
+            .with_max_frame_bytes(2);
+        let mut bytes = Vec::new();
+        let error = write_state_import_message_timed(
+            &mut bytes,
+            &message,
+            WireActivationDType::F16,
+            options,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn truncated_large_state_import_fails_closed() {
+        let bytes = large_state_import_test_bytes();
+        let truncated = &bytes[..bytes.len() - 1];
+        assert!(read_stage_message(Cursor::new(truncated), 2048).is_err());
+    }
+
+    #[test]
+    fn checksum_mismatch_large_state_import_fails_closed() {
+        let mut bytes = large_state_import_test_bytes();
+        let first_payload = first_large_state_payload_offset();
+        bytes[first_payload] ^= 0xff;
+        let error = read_stage_message(Cursor::new(bytes), 2048).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn out_of_order_large_state_import_fails_closed() {
+        let mut bytes = large_state_import_test_bytes();
+        let first_frame_index = first_large_state_frame_index_offset();
+        bytes[first_frame_index..first_frame_index + 8].copy_from_slice(&1_u64.to_le_bytes());
+        let error = read_stage_message(Cursor::new(bytes), 2048).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    fn large_state_import_test_bytes() -> Vec<u8> {
+        let mut state =
+            StageStateHeader::new(WireMessageKind::StateImport, WireActivationDType::F32);
+        state.flags |= state_flags::LARGE_STATE_FRAMING;
+        let message = StageWireMessage {
+            kind: WireMessageKind::StateImport,
+            pos_start: 0,
+            token_count: 0,
+            state,
+            request_id: 31,
+            session_id: 37,
+            sampling: None,
+            chat_sampling_metadata: None,
+            tokens: Vec::new(),
+            positions: Vec::new(),
+            activation: Vec::new(),
+            raw_bytes: vec![1, 2, 3, 4, 5],
+        };
+        let options = LargeStateFramingOptions::enabled()
+            .with_threshold_bytes(3)
+            .with_max_frame_bytes(2);
+        let mut bytes = Vec::new();
+        write_state_import_message_timed(&mut bytes, &message, WireActivationDType::F32, options)
+            .unwrap();
+        bytes
+    }
+
+    fn first_large_state_frame_index_offset() -> usize {
+        let start_metadata = 4 + 8 + 8 + 8 + 4 + 32;
+        STAGE_WIRE_FIXED_HEADER_BYTES + start_metadata + STAGE_WIRE_FIXED_HEADER_BYTES + 4
+    }
+
+    fn first_large_state_payload_offset() -> usize {
+        first_large_state_frame_index_offset() + 8 + 8 + 8
     }
 
     #[test]

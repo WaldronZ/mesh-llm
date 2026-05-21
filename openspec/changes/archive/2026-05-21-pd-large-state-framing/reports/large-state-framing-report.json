@@ -1,0 +1,54 @@
+{
+  "result": "pass",
+  "recommendation": "proceed_to_8k_optional_smoke",
+  "scope": "local framing validation plus separately authorized 4k foreground smoke through pd-chunked-prefill",
+  "local_validation": {
+    "small_payload_legacy_state_import": "pass",
+    "capability_missing_fail_closed": "pass",
+    "framed_payload_round_trip": "pass",
+    "truncated_frame_fail_closed": "pass",
+    "checksum_mismatch_fail_closed": "pass",
+    "out_of_order_frame_fail_closed": "pass",
+    "manifest_large_state_provenance": "pass",
+    "telemetry_privacy": "pass"
+  },
+  "large_state_metrics": {
+    "state_payload_bytes": 3516265368,
+    "frame_count": 210,
+    "frame_bytes": 16777216,
+    "write_ms": 767.714084,
+    "read_ms": 29917.971708,
+    "checksum_ms": 13646.654083000001,
+    "result": "framed",
+    "protocol": "large-state-framing/1"
+  },
+  "foreground_4k_smoke": {
+    "authorized": true,
+    "ran": true,
+    "manifest_validated": true,
+    "mac_import_decode": "pass",
+    "sse_completed": true,
+    "processes_survived": true,
+    "ports_released": true
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "complete_token_arrays_recorded": false,
+    "generated_content_recorded": false,
+    "kv_or_native_state_payload_recorded": false,
+    "credentials_recorded": false,
+    "private_paths_recorded": false,
+    "endpoint_urls_recorded": false,
+    "real_machine_labels_recorded": false
+  },
+  "failure_reason": null,
+  "scope_closure": {
+    "current_scope": "large-state framing blocker fixed for 4k chunked prefill",
+    "small_legacy_state_import_compatibility": "preserved",
+    "foreground_4k_rerun": "pass_large_state_export_mac_import_decode_sse_completion",
+    "optional_8k_smoke": "future_validation_not_archive_scope",
+    "contexts_32k_128k_256k": "out_of_scope",
+    "kv_compression": "out_of_scope",
+    "scheduler_multi_worker_production_concurrency": "out_of_scope"
+  }
+}

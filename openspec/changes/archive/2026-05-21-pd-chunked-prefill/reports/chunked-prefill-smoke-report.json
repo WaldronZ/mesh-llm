@@ -1,0 +1,93 @@
+{
+  "result": "pass",
+  "recommendation": "request_8k_optional_smoke",
+  "scope": "4k-only chunked prefill foreground smoke after large-state framing",
+  "privacy": {
+    "prompt_text_recorded": false,
+    "complete_token_arrays_recorded": false,
+    "generated_content_recorded": false,
+    "kv_payload_recorded": false,
+    "native_state_payload_recorded": false,
+    "credentials_recorded": false,
+    "private_paths_recorded": false,
+    "endpoint_urls_recorded": false,
+    "real_machine_labels_recorded": false
+  },
+  "environment": {
+    "mac_binary_sha256": "b607aeb69ddf56fe880d8d107358eeda2d87ef491b476c262f15d733a7904902",
+    "pgx_binary_sha256": "40a88f75a753305fec58e2d643ce135fb5867f69d69164b8992440713833b84b",
+    "model_entry_shard_basename": "google_gemma-4-31B-it-bf16-00001-of-00002.gguf",
+    "model_entry_shard_sha256": "df3ddef50bfc84938ee22387d4c96fb1a549a1d4f8f425fe84cbf558c41dfd29",
+    "tokenizer_metadata_hash": "6aa0dc8786823d04fb6d953994df47eb4f9382ed07efd8898411659778e0a397",
+    "chat_template_hash": "f86783fcbe17e6e9bd84d7246344a8a2f8c4d35860ca14edef0fc90559a528a3"
+  },
+  "prompt_suite": [
+    {
+      "prompt_id": "chunked-4k",
+      "target_class": "4k",
+      "tokenizer_prompt_tokens": 3903,
+      "prefill_tokens": 3902,
+      "expected_admission": "admitted",
+      "observed_admission": "admitted",
+      "prompt_text_recorded": false
+    }
+  ],
+  "metrics": {
+    "chunked_prefill_enabled": true,
+    "chunk_size": 1024,
+    "observed_chunk_count": 4,
+    "chunk_tokens_bounded": [1024, 1024, 1024, 830],
+    "kv_tokens_after_chunks": [1024, 2048, 3072, 3902],
+    "chunk_prefill_ms_bounded": [5.154375, 1570.8033750000002, 1616.359041, 1725.366875],
+    "total_prefill_ms": 4917.711332999999,
+    "final_decode_start_position": 3902,
+    "kv_payload_bytes": 3516265368,
+    "state_payload_bytes": 3516265368,
+    "kv_export_ms": 15385.536042000003,
+    "kv_transfer_network_ms": 30685.685792,
+    "kv_import_ms": 14098.602708,
+    "ttft_ms": 79249.60175,
+    "decode_tokens_per_sec": 9.860053363144942,
+    "large_state_framing": {
+      "enabled": true,
+      "protocol": "large-state-framing/1",
+      "frame_count": 210,
+      "frame_bytes": 16777216,
+      "write_ms": 767.714084,
+      "read_ms": 29917.971708,
+      "checksum_ms": 13646.654083000001,
+      "result": "framed"
+    }
+  },
+  "request_result": {
+    "http_status": 200,
+    "sse_normal_completion": true,
+    "sse_error_observed": false,
+    "fallback_used": false,
+    "mac_import_decode_completed": true,
+    "pd_mvp_result": "pass"
+  },
+  "cleanup": {
+    "pgx_process_survived_until_manual_stop": true,
+    "mac_decode_process_survived_until_manual_stop": true,
+    "mac_router_process_survived_until_manual_stop": true,
+    "ports_released": true
+  },
+  "failure_reason": null,
+  "remaining_scope": {
+    "baseline_below_one_shot_limit_rerun": false,
+    "optional_8k_smoke_ran": false,
+    "over_policy_rerun": false
+  },
+  "scope_closure": {
+    "current_scope": "4k chunked prefill pass",
+    "baseline_below_one_shot_limit": "deferred_not_required_for_4k_chunked_pass",
+    "over_policy_smoke": "deferred_prior_admission_changes_cover_pre_pgx_rejection",
+    "optional_8k_smoke": "future_validation_requires_separate_authorization",
+    "ui_reasoning_final_separation": "out_of_scope_future_chat_ui_ux_change",
+    "output_truncation_ux": "out_of_scope_future_chat_ui_ux_change",
+    "configurable_max_output_tokens": "out_of_scope_future_chat_ui_ux_change",
+    "finish_reason_completion_token_count_reporting_gap": "future_ui_ux_or_reporting_improvement_not_chunked_correctness_blocker"
+  },
+  "next_step": "archive current 4k scope; request separate authorization for optional 8k foreground smoke"
+}

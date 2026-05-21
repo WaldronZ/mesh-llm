@@ -38,10 +38,10 @@ use sha2::{Digest, Sha256};
 use skippy_metrics::attr as attr_key;
 use skippy_protocol::binary::{
     read_stage_message_timed, recv_ready, recv_reply, state_flags, write_stage_message,
-    write_stage_message_timed, StageLogitBias as WireLogitBias, StageReply, StageReplyStats,
-    StageSamplingConfig as WireSamplingConfig, StageStateHeader, StageWireMessage,
-    WireActivationDType, WireMessageKind, WireReplyKind, LLAMA_TOKEN_NULL, MAX_STAGE_LOGIT_BIAS,
-    STAGE_STATE_VERSION,
+    write_state_import_message_timed, LargeStateFramingOptions, StageLogitBias as WireLogitBias,
+    StageReply, StageReplyStats, StageSamplingConfig as WireSamplingConfig, StageStateHeader,
+    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind,
+    LARGE_STATE_FRAMING_CAPABILITY, LLAMA_TOKEN_NULL, MAX_STAGE_LOGIT_BIAS, STAGE_STATE_VERSION,
 };
 use skippy_protocol::{MessageBase, StageConfig, StageTopology, SCHEMA_VERSION};
 use skippy_runtime::{
@@ -75,6 +75,7 @@ mod embedded_generation;
 mod generation_flow;
 mod local_generation;
 mod pd_admission;
+mod pd_chunked_prefill;
 #[cfg(test)]
 mod pd_hardening_tests;
 mod pd_router_validation;
@@ -86,7 +87,10 @@ mod speculative;
 mod util;
 mod wire_messages;
 
-use self::{pd_admission::*, prefill::*, request::*, speculative::*, util::*, wire_messages::*};
+use self::{
+    pd_admission::*, pd_chunked_prefill::*, prefill::*, request::*, speculative::*, util::*,
+    wire_messages::*,
+};
 
 static OPENAI_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -755,6 +759,7 @@ struct PdRouterValidationConfig {
     fault_injection: PdRouterValidationFault,
     mvp_test_fault: PdServingMvpTestFault,
     admission: Option<PdAdmissionPolicy>,
+    chunked_prefill: Option<PdChunkedPrefillConfig>,
 }
 
 impl PdRouterValidationConfig {
@@ -816,6 +821,7 @@ fn pd_router_validation_config_from_args(
     {
         bail!("--pd-serving-mvp-test-fault requires --pd-serving-mvp");
     }
+    let admission = pd_admission_policy_from_args(args, mode, model_id)?;
     let config = PdRouterValidationConfig {
         mode,
         prefill_addr: required(&args.pd_prefill_addr, "--pd-prefill-addr")?,
@@ -843,7 +849,8 @@ fn pd_router_validation_config_from_args(
         } else {
             PdServingMvpTestFault::None
         },
-        admission: pd_admission_policy_from_args(args, mode, model_id)?,
+        chunked_prefill: admission.and_then(|policy| policy.chunked_prefill),
+        admission,
     };
     validate_pd_hash(
         &config.expected_artifact_sha256,
@@ -904,6 +911,9 @@ struct PdServingStatus {
     estimated_kv_bytes_per_token: Option<u64>,
     kv_bytes_per_token_source: Option<&'static str>,
     effective_prompt_limit_without_generation: Option<usize>,
+    chunked_prefill_enabled: bool,
+    prefill_chunk_size: Option<usize>,
+    chunked_prefill_capability: Option<&'static str>,
 }
 
 fn pd_serving_status_for_start(
@@ -946,6 +956,13 @@ fn pd_serving_status_for_start(
         effective_prompt_limit_without_generation: config
             .admission
             .and_then(|policy| policy.effective_prompt_limit(0)),
+        chunked_prefill_enabled: config.chunked_prefill.is_some(),
+        prefill_chunk_size: config
+            .chunked_prefill
+            .map(|chunked_prefill| chunked_prefill.chunk_size),
+        chunked_prefill_capability: config
+            .chunked_prefill
+            .map(|_| PD_CHUNKED_PREFILL_CAPABILITY),
     }
 }
 
@@ -1002,6 +1019,19 @@ fn emit_pd_serving_status(
         json!(status.capacity_state),
     );
     attrs.insert("pd.current_state".to_string(), json!(status.current_state));
+    attrs.insert(
+        "pd.chunked_prefill.enabled".to_string(),
+        json!(status.chunked_prefill_enabled),
+    );
+    if let Some(chunk_size) = status.prefill_chunk_size {
+        attrs.insert("pd.prefill.chunk_size".to_string(), json!(chunk_size));
+    }
+    if let Some(capability) = status.chunked_prefill_capability {
+        attrs.insert(
+            "pd.chunked_prefill.capability".to_string(),
+            json!(capability),
+        );
+    }
     insert_pd_admission_status_attrs(&mut attrs, config.admission.as_ref());
     telemetry.emit("stage.pd_serving_status", attrs);
 }

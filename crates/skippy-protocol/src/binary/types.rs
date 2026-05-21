@@ -13,6 +13,12 @@ pub const STAGE_STATE_HEADER_BYTES: usize = 10 * 4;
 pub const STAGE_SAMPLING_CONFIG_BASE_BYTES: usize = 10 * 4;
 pub const STAGE_LOGIT_BIAS_WIRE_BYTES: usize = 4 + 4;
 pub const STAGE_WIRE_FIXED_HEADER_BYTES: usize = 5 * 4 + STAGE_STATE_HEADER_BYTES + 2 * 8;
+pub const LARGE_STATE_FRAMING_CAPABILITY: &str = "large-state-framing/1";
+pub const LARGE_STATE_FRAMING_PROTOCOL_VERSION: u32 = 1;
+pub const DEFAULT_LARGE_STATE_FRAME_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_LARGE_STATE_FRAME_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_LARGE_STATE_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+pub const LEGACY_STATE_IMPORT_MAX_BYTES: u64 = i32::MAX as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -57,6 +63,9 @@ pub enum WireMessageKind {
     TryRestorePrefill = 17,
     TryRestorePrefillDecode = 18,
     TrimSession = 19,
+    LargeStateStart = 20,
+    LargeStateData = 21,
+    LargeStateEnd = 22,
 }
 
 impl WireMessageKind {
@@ -137,6 +146,9 @@ impl TryFrom<i32> for WireMessageKind {
             17 => Ok(Self::TryRestorePrefill),
             18 => Ok(Self::TryRestorePrefillDecode),
             19 => Ok(Self::TrimSession),
+            20 => Ok(Self::LargeStateStart),
+            21 => Ok(Self::LargeStateData),
+            22 => Ok(Self::LargeStateEnd),
             _ => Err(invalid_data("unknown stage message kind")),
         }
     }
@@ -181,6 +193,7 @@ pub mod state_flags {
     pub const CHAT_SAMPLING_METADATA: i32 = 1 << 5;
     pub const RWKV7_V_FIRST_SIDEBAND: i32 = 1 << 6;
     pub const GEMMA3N_ALTUP_SIDEBAND: i32 = 1 << 7;
+    pub const LARGE_STATE_FRAMING: i32 = 1 << 8;
 }
 
 pub const ACTIVATION_FLAG_RWKV7_V_FIRST: u64 = 1 << 0;
@@ -309,7 +322,11 @@ impl StageStateHeader {
     pub fn matches_kind(self, kind: WireMessageKind) -> bool {
         if matches!(
             kind,
-            WireMessageKind::StateImport | WireMessageKind::StateExport
+            WireMessageKind::StateImport
+                | WireMessageKind::StateExport
+                | WireMessageKind::LargeStateStart
+                | WireMessageKind::LargeStateData
+                | WireMessageKind::LargeStateEnd
         ) || kind.is_session_control()
             || kind.is_generation_control()
         {
@@ -545,7 +562,11 @@ fn expected_phase(kind: WireMessageKind) -> WireStagePhase {
     if kind.is_prefill()
         || matches!(
             kind,
-            WireMessageKind::StateImport | WireMessageKind::StateExport
+            WireMessageKind::StateImport
+                | WireMessageKind::StateExport
+                | WireMessageKind::LargeStateStart
+                | WireMessageKind::LargeStateData
+                | WireMessageKind::LargeStateEnd
         )
         || kind.is_session_control()
         || kind.is_generation_control()

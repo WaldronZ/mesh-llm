@@ -233,6 +233,16 @@ pub struct ServeOpenAiArgs {
         help = "Estimated native KV handoff bytes per prompt token for PD serving admission. If omitted, only calibrated model/topology defaults may be used."
     )]
     pub pd_estimated_kv_bytes_per_token: Option<u64>,
+    #[arg(
+        long,
+        help = "Enable chunked PGX prefill for the scoped PD serving MVP. Default is off."
+    )]
+    pub pd_chunked_prefill: bool,
+    #[arg(
+        long,
+        help = "Maximum prompt tokens per PD prefill chunk. Defaults to --pd-max-prefill-batch when chunked prefill is enabled."
+    )]
+    pub pd_prefill_chunk_size: Option<usize>,
     #[arg(long, default_value_t = 256)]
     pub prefill_chunk_size: usize,
     #[arg(
@@ -355,6 +365,8 @@ mod tests {
         assert!(args.pd_max_ctx_size.is_none());
         assert!(args.pd_max_handoff_bytes.is_none());
         assert!(args.pd_estimated_kv_bytes_per_token.is_none());
+        assert!(!args.pd_chunked_prefill);
+        assert!(args.pd_prefill_chunk_size.is_none());
         assert!(args.pd_prefill_addr.is_none());
         assert!(args.pd_decode_addr.is_none());
     }
@@ -424,6 +436,9 @@ mod tests {
             "1073741824",
             "--pd-estimated-kv-bytes-per-token",
             "902000",
+            "--pd-chunked-prefill",
+            "--pd-prefill-chunk-size",
+            "1800",
         ]);
 
         let Command::ServeOpenAi(args) = cli.command else {
@@ -449,5 +464,7 @@ mod tests {
         assert_eq!(args.pd_max_ctx_size, Some(8192));
         assert_eq!(args.pd_max_handoff_bytes, Some(1073741824));
         assert_eq!(args.pd_estimated_kv_bytes_per_token, Some(902000));
+        assert!(args.pd_chunked_prefill);
+        assert_eq!(args.pd_prefill_chunk_size, Some(1800));
     }
 }

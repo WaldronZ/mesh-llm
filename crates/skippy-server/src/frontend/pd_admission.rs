@@ -4,6 +4,8 @@ use crate::cli::PdAdmissionOverLimitAction;
 #[cfg(test)]
 use crate::telemetry::TelemetryLevel;
 
+use super::pd_chunked_prefill::PdChunkedPrefillConfig;
+
 const PD_GEMMA4_31B_IT_BF16_MODEL_ID: &str = "google_gemma-4-31B-it-bf16";
 const PD_GEMMA4_NATIVE_FULL_STATE_KV_BYTES_PER_TOKEN: u64 = 902_000;
 
@@ -33,6 +35,7 @@ pub(super) struct PdAdmissionPolicy {
     pub(super) estimated_kv_bytes_per_token: Option<u64>,
     pub(super) kv_bytes_per_token_source: PdKvBytesPerTokenSource,
     pub(super) over_limit_action: PdAdmissionOverLimitAction,
+    pub(super) chunked_prefill: Option<PdChunkedPrefillConfig>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,9 +181,13 @@ impl PdAdmissionPolicy {
 
     pub(super) fn token_context_prefill_limit(self, requested_max_tokens: u32) -> usize {
         let requested_max_tokens = usize::try_from(requested_max_tokens).unwrap_or(usize::MAX);
-        self.max_prompt_tokens
-            .min(self.max_prefill_batch)
-            .min(self.max_ctx_size.saturating_sub(requested_max_tokens))
+        let mut limit = self
+            .max_prompt_tokens
+            .min(self.max_ctx_size.saturating_sub(requested_max_tokens));
+        if self.chunked_prefill.is_none() {
+            limit = limit.min(self.max_prefill_batch);
+        }
+        limit
     }
 
     pub(super) fn effective_prompt_limit(self, requested_max_tokens: u32) -> Option<usize> {
@@ -213,7 +220,7 @@ impl PdAdmissionPolicy {
         {
             return Some(PdAdmissionReason::CtxSizeExceeded);
         }
-        if prompt_token_count > self.max_prefill_batch {
+        if self.chunked_prefill.is_none() && prompt_token_count > self.max_prefill_batch {
             return Some(PdAdmissionReason::PrefillBatchExceeded);
         }
         None
@@ -230,6 +237,8 @@ pub(super) fn pd_admission_policy_from_args(
         || args.pd_max_ctx_size.is_some()
         || args.pd_max_handoff_bytes.is_some()
         || args.pd_estimated_kv_bytes_per_token.is_some()
+        || args.pd_chunked_prefill
+        || args.pd_prefill_chunk_size.is_some()
         || args.pd_admission_over_limit != PdAdmissionOverLimitAction::Fallback;
     if mode != PdServingMode::Mvp {
         if has_pd_admission_args {
@@ -247,6 +256,17 @@ pub(super) fn pd_admission_policy_from_args(
         required_positive_u64(args.pd_max_handoff_bytes, "--pd-max-handoff-bytes")?;
     let (estimated_kv_bytes_per_token, kv_bytes_per_token_source) =
         pd_kv_bytes_per_token_from_args(args, model_id)?;
+    if args.pd_prefill_chunk_size.is_some() && !args.pd_chunked_prefill {
+        bail!("--pd-prefill-chunk-size requires --pd-chunked-prefill");
+    }
+    let chunked_prefill = if args.pd_chunked_prefill {
+        Some(PdChunkedPrefillConfig::new(
+            args.pd_prefill_chunk_size.unwrap_or(max_prefill_batch),
+            max_prefill_batch,
+        )?)
+    } else {
+        None
+    };
 
     Ok(Some(PdAdmissionPolicy {
         max_prompt_tokens,
@@ -256,6 +276,7 @@ pub(super) fn pd_admission_policy_from_args(
         estimated_kv_bytes_per_token,
         kv_bytes_per_token_source,
         over_limit_action: args.pd_admission_over_limit,
+        chunked_prefill,
     }))
 }
 
@@ -301,6 +322,7 @@ pub(super) fn pd_admission_missing_config_decision(
             estimated_kv_bytes_per_token: None,
             kv_bytes_per_token_source: PdKvBytesPerTokenSource::Missing,
             over_limit_action: PdAdmissionOverLimitAction::Reject,
+            chunked_prefill: None,
         },
         token_context_prefill_limit: 0,
         effective_prompt_limit: None,
@@ -357,6 +379,20 @@ pub(super) fn insert_pd_admission_status_attrs(
             "pd.kv_bytes_per_token_source".to_string(),
             json!(policy.kv_bytes_per_token_source.label()),
         );
+        attrs.insert(
+            "pd.chunked_prefill.enabled".to_string(),
+            json!(policy.chunked_prefill.is_some()),
+        );
+        if let Some(chunked_prefill) = policy.chunked_prefill {
+            attrs.insert(
+                "pd.prefill.chunk_size".to_string(),
+                json!(chunked_prefill.chunk_size),
+            );
+            attrs.insert(
+                "pd.chunked_prefill.capability".to_string(),
+                json!(super::pd_chunked_prefill::PD_CHUNKED_PREFILL_CAPABILITY),
+            );
+        }
     }
 }
 
@@ -422,6 +458,20 @@ impl StageOpenAiBackend {
             "pd.requested_max_tokens".to_string(),
             json!(outcome.requested_max_tokens),
         );
+        attrs.insert(
+            "pd.chunked_prefill.enabled".to_string(),
+            json!(outcome.policy.chunked_prefill.is_some()),
+        );
+        if let Some(chunked_prefill) = outcome.policy.chunked_prefill {
+            attrs.insert(
+                "pd.prefill.chunk_size".to_string(),
+                json!(chunked_prefill.chunk_size),
+            );
+            attrs.insert(
+                "pd.chunked_prefill.capability".to_string(),
+                json!(super::pd_chunked_prefill::PD_CHUNKED_PREFILL_CAPABILITY),
+            );
+        }
         match outcome.result {
             PdAdmissionResult::Admitted => {}
             PdAdmissionResult::Fallback => {
@@ -475,6 +525,7 @@ mod tests {
             estimated_kv_bytes_per_token: Some(100),
             kv_bytes_per_token_source: PdKvBytesPerTokenSource::Configured,
             over_limit_action: PdAdmissionOverLimitAction::Fallback,
+            chunked_prefill: None,
         }
     }
 
@@ -543,6 +594,39 @@ mod tests {
 
         assert_eq!(policy.token_context_prefill_limit(8), 12);
         assert_eq!(policy.effective_prompt_limit(8), Some(12));
+    }
+
+    #[test]
+    fn chunked_capability_removes_whole_prompt_prefill_batch_gate() {
+        let mut policy = policy();
+        policy.max_prompt_tokens = 8192;
+        policy.max_prefill_batch = 1800;
+        policy.max_ctx_size = 8192;
+        policy.max_handoff_bytes = 10_000_000;
+        policy.chunked_prefill = Some(PdChunkedPrefillConfig::new(1800, 1800).unwrap());
+
+        let decision = policy.evaluate(4000, 32);
+
+        assert!(decision.should_start_prefill());
+        assert_eq!(decision.outcome().reason, PdAdmissionReason::WithinLimits);
+        assert_eq!(decision.outcome().token_context_prefill_limit, 8192 - 32);
+    }
+
+    #[test]
+    fn missing_chunked_capability_keeps_prefill_batch_rejection() {
+        let mut policy = policy();
+        policy.max_prompt_tokens = 8192;
+        policy.max_prefill_batch = 1800;
+        policy.max_ctx_size = 8192;
+        policy.max_handoff_bytes = 10_000_000;
+
+        let decision = policy.evaluate(4000, 32);
+
+        assert!(!decision.should_start_prefill());
+        assert_eq!(
+            decision.outcome().reason,
+            PdAdmissionReason::PrefillBatchExceeded
+        );
     }
 
     #[test]
@@ -689,6 +773,8 @@ mod tests {
             pd_max_ctx_size: None,
             pd_max_handoff_bytes: None,
             pd_estimated_kv_bytes_per_token: None,
+            pd_chunked_prefill: false,
+            pd_prefill_chunk_size: None,
             prefill_chunk_size: 256,
             prefill_chunk_policy: "fixed".to_string(),
             prefill_chunk_schedule: None,
@@ -744,6 +830,8 @@ mod tests {
             pd_max_ctx_size: Some(32),
             pd_max_handoff_bytes: Some(16_000),
             pd_estimated_kv_bytes_per_token: Some(100),
+            pd_chunked_prefill: false,
+            pd_prefill_chunk_size: None,
             prefill_chunk_size: 256,
             prefill_chunk_policy: "fixed".to_string(),
             prefill_chunk_schedule: None,

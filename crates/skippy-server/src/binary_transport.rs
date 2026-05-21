@@ -26,9 +26,10 @@ use skippy_protocol::{
     binary::{
         activation_frame_flags_from_state_flags, read_stage_message, recv_reply, send_ready,
         send_reply_ack, send_reply_ack_with_stats, send_reply_predicted_tokens_with_stats,
-        send_reply_predicted_with_stats, state_flags, write_stage_message, StageReplyStats,
-        StageSamplingConfig, StageStateHeader, StageWireMessage, WireActivationDType,
-        WireMessageKind, WireReplyKind, STAGE_LOGIT_BIAS_WIRE_BYTES,
+        send_reply_predicted_with_stats, state_flags, write_state_import_message_timed,
+        LargeStateFramingOptions, StageReplyStats, StageSamplingConfig, StageStateHeader,
+        StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind,
+        LARGE_STATE_FRAMING_CAPABILITY, STAGE_LOGIT_BIAS_WIRE_BYTES,
         STAGE_SAMPLING_CONFIG_BASE_BYTES, STAGE_WIRE_FIXED_HEADER_BYTES,
     },
     MessageBase, StageConfig, StageTopology, SCHEMA_VERSION,
@@ -739,6 +740,10 @@ fn handle_binary_connection(
             let state_token_count = message.state.prompt_token_count.max(0) as u64;
             let local_started = Instant::now();
             let mut state_payload_bytes = message.raw_bytes.len();
+            let mut large_state_frame_count = 0_u64;
+            let mut large_state_frame_bytes = 0_u64;
+            let mut large_state_write_ms = 0.0_f64;
+            let mut large_state_checksum_ms = 0.0_f64;
             match message.kind {
                 WireMessageKind::StateExport => {
                     let exported = {
@@ -755,14 +760,13 @@ fn handle_binary_connection(
                     };
                     state_payload_bytes = exported.len();
                     let mut state = StageStateHeader::new(WireMessageKind::StateImport, wire_dtype);
-                    state.flags |= message.state.flags & state_flags::FULL_STATE;
+                    state.flags |= message.state.flags
+                        & (state_flags::FULL_STATE | state_flags::LARGE_STATE_FRAMING);
                     state.prompt_token_count = message.state.prompt_token_count;
-                    let token_count = i32::try_from(exported.len())
-                        .context("exported binary state payload exceeds i32 length")?;
                     let reply = StageWireMessage {
                         kind: WireMessageKind::StateImport,
                         pos_start: 0,
-                        token_count,
+                        token_count: 0,
                         state,
                         request_id: message.request_id,
                         session_id: message.session_id,
@@ -773,8 +777,21 @@ fn handle_binary_connection(
                         activation: Vec::new(),
                         raw_bytes: exported,
                     };
-                    write_stage_message(&mut *upstream, &reply, wire_dtype)
-                        .context("send binary state export payload")?;
+                    let write_timing = write_state_import_message_timed(
+                        &mut *upstream,
+                        &reply,
+                        wire_dtype,
+                        if (message.state.flags & state_flags::LARGE_STATE_FRAMING) != 0 {
+                            LargeStateFramingOptions::enabled()
+                        } else {
+                            LargeStateFramingOptions::disabled()
+                        },
+                    )
+                    .context("send binary state export payload")?;
+                    large_state_frame_count = write_timing.large_state_frame_count;
+                    large_state_frame_bytes = write_timing.large_state_frame_bytes;
+                    large_state_write_ms = write_timing.raw_payload_ms;
+                    large_state_checksum_ms = write_timing.large_state_checksum_ms;
                 }
                 WireMessageKind::StateImport => {
                     {
@@ -822,6 +839,34 @@ fn handle_binary_connection(
             attrs.insert(
                 "llama_stage.state_payload_bytes".to_string(),
                 json!(state_payload_bytes),
+            );
+            attrs.insert(
+                "llama_stage.large_state_framing_capability".to_string(),
+                json!(LARGE_STATE_FRAMING_CAPABILITY),
+            );
+            attrs.insert(
+                "llama_stage.large_state_frame_count".to_string(),
+                json!(large_state_frame_count),
+            );
+            attrs.insert(
+                "llama_stage.large_state_frame_bytes".to_string(),
+                json!(large_state_frame_bytes),
+            );
+            attrs.insert(
+                "llama_stage.large_state_write_ms".to_string(),
+                json!(large_state_write_ms),
+            );
+            attrs.insert(
+                "llama_stage.large_state_checksum_ms".to_string(),
+                json!(large_state_checksum_ms),
+            );
+            attrs.insert(
+                "llama_stage.large_state_result".to_string(),
+                json!(if large_state_frame_count > 0 {
+                    "framed"
+                } else {
+                    "legacy"
+                }),
             );
             attrs.insert(
                 "llama_stage.state_control_local_ms".to_string(),
@@ -3266,6 +3311,9 @@ pub(crate) fn run_binary_stage_message(
         WireMessageKind::Stop
         | WireMessageKind::StateImport
         | WireMessageKind::StateExport
+        | WireMessageKind::LargeStateStart
+        | WireMessageKind::LargeStateData
+        | WireMessageKind::LargeStateEnd
         | WireMessageKind::ConfigureGeneration
         | WireMessageKind::CheckpointSession
         | WireMessageKind::RestoreSession
