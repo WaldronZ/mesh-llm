@@ -1,0 +1,93 @@
+{
+  "result": "pass",
+  "recommendation": "proceed_to_review",
+  "date": "2026-05-20",
+  "scope": "minimal foreground smoke for long-context PD admission guard",
+  "production_ready": false,
+  "sanitization": {
+    "prompt_text_recorded": false,
+    "complete_token_arrays_recorded": false,
+    "generated_content_recorded": false,
+    "kv_payload_contents_recorded": false,
+    "credentials_recorded": false,
+    "private_paths_recorded": false,
+    "private_machine_details_recorded": false
+  },
+  "environment": {
+    "router_decode_role": "mac_coordinator_router_decode",
+    "prefill_export_role": "pgx_prefill_export",
+    "serving_mode": "pd-serving-mvp",
+    "router_validation_mode_used": false,
+    "local_binary_sha256": "3d736da56c54b67e32ee7e691edaeef4107d4a8e3910c837681e54593d7d71d0",
+    "prefill_binary_sha256": "b5dfb6cb16c5b99430e3461b3a56361edd927a38bf0036a2030e11e27086c283"
+  },
+  "admission_policy": {
+    "over_limit_action": "reject",
+    "max_prompt_tokens": 1800,
+    "max_prefill_batch": 1800,
+    "max_ctx_size": 8192,
+    "max_handoff_bytes": 1073741824,
+    "estimated_kv_bytes_per_token": 524288,
+    "requested_max_tokens": 32
+  },
+  "cases": [
+    {
+      "prompt_id": "near-threshold",
+      "calibration_token_count": 1613,
+      "router_admission_token_count": 1616,
+      "expected": "admitted_pd_path_pass",
+      "observed": "admitted_pd_path_pass",
+      "http_status": 200,
+      "telemetry": {
+        "pd.admission.result": "admitted",
+        "pd.admission.reason": "within_limits",
+        "pd.prompt_token_count": 1616,
+        "pd.estimated_kv_bytes": 847249408,
+        "pd.max_prompt_tokens": 1800,
+        "pd.max_prefill_batch": 1800,
+        "pd.max_ctx_size": 8192,
+        "pd.max_handoff_bytes": 1073741824,
+        "pd.mvp.result": "pass",
+        "pd.protocol_version": "pd-handoff/1",
+        "pd.kv_payload_bytes": 1455349040,
+        "pd.kv_transfer_isolated": true,
+        "pd.kv_transfer_ms": 12554.228458,
+        "pd.router_overhead_ms": 24977.331958,
+        "pd.ttft_ms": 21998.272,
+        "pd.decode_tokens_per_sec": 10.372235070623132
+      }
+    },
+    {
+      "prompt_id": "over-threshold",
+      "calibration_token_count": 2013,
+      "router_admission_token_count": 2016,
+      "expected": "reject_before_pgx_prefill",
+      "observed": "reject_before_pgx_prefill",
+      "http_status": 200,
+      "streaming_error_code": "context_length_exceeded",
+      "assistant_content_delta_count": 0,
+      "prefill_log_lines_before": 1344,
+      "prefill_log_lines_after": 1344,
+      "prefill_port_alive_after_rejection": true,
+      "telemetry": {
+        "pd.admission.result": "rejected",
+        "pd.admission.reason": "prompt_tokens_exceeded",
+        "pd.prompt_token_count": 2016,
+        "pd.estimated_kv_bytes": 1056964608,
+        "pd.max_prompt_tokens": 1800,
+        "pd.max_prefill_batch": 1800,
+        "pd.max_ctx_size": 8192,
+        "pd.max_handoff_bytes": 1073741824,
+        "pd.mvp.result": "fail",
+        "pd.mvp.failure_phase": "admission",
+        "pd.mvp.failure_reason": "prompt_tokens_exceeded",
+        "pd.pre_content": true
+      }
+    }
+  ],
+  "cleanup": {
+    "stopped_with_sigint": true,
+    "mac_ports_free_after_cleanup": [19330, 19331, 19337],
+    "pgx_ports_free_after_cleanup": [19330]
+  }
+}

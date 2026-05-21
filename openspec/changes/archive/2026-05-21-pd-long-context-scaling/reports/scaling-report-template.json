@@ -1,0 +1,85 @@
+{
+  "result": "pass | fail | inconclusive | blocked",
+  "recommendation": "proceed_to_4k_smoke | proceed_to_8k_smoke | chunked_prefill_required | redesign",
+  "production_ready": false,
+  "sanitization": {
+    "prompt_text_recorded": false,
+    "complete_token_arrays_recorded": false,
+    "generated_content_recorded": false,
+    "kv_payload_contents_recorded": false,
+    "credentials_recorded": false,
+    "private_paths_recorded": false,
+    "private_machine_labels_recorded": false,
+    "endpoint_urls_recorded": false,
+    "raw_host_identifiers_recorded": false
+  },
+  "calibration": {
+    "model_topology_label": "<bounded-label>",
+    "estimated_kv_bytes_per_token": 902000,
+    "kv_bytes_per_token_source": "measured",
+    "previous_estimate": 524288
+  },
+  "admission_policy": {
+    "max_prompt_tokens": null,
+    "max_prefill_batch": null,
+    "max_ctx_size": null,
+    "requested_max_tokens": null,
+    "max_handoff_bytes": null,
+    "token_context_prefill_limit": null,
+    "effective_prompt_limit": null
+  },
+  "cases": [
+    {
+      "prompt_id": "4k-near-threshold",
+      "prompt_token_count": null,
+      "expected": "admitted_or_blocked",
+      "observed": null,
+      "admission_result": null,
+      "admission_reason": null,
+      "pgx_prefill_received_request": null,
+      "telemetry": {
+        "pd.estimated_kv_bytes": null,
+        "pd.kv_payload_bytes": null,
+        "pd.kv_export_ms": null,
+        "pd.kv_transfer_ms": null,
+        "pd.kv_import_ms": null,
+        "pd.ttft_ms": null,
+        "pd.decode_tokens_per_sec": null
+      }
+    },
+    {
+      "prompt_id": "8k-near-threshold",
+      "prompt_token_count": null,
+      "expected": "admitted_or_blocked",
+      "observed": null,
+      "admission_result": null,
+      "admission_reason": null,
+      "pgx_prefill_received_request": null,
+      "telemetry": {
+        "pd.estimated_kv_bytes": null,
+        "pd.kv_payload_bytes": null,
+        "pd.kv_export_ms": null,
+        "pd.kv_transfer_ms": null,
+        "pd.kv_import_ms": null,
+        "pd.ttft_ms": null,
+        "pd.decode_tokens_per_sec": null
+      }
+    },
+    {
+      "prompt_id": "over-threshold",
+      "prompt_token_count": null,
+      "expected": "reject_or_fallback_before_pgx",
+      "observed": null,
+      "admission_result": null,
+      "admission_reason": null,
+      "pgx_prefill_received_request": false
+    }
+  ],
+  "no_go_checks": {
+    "one_shot_kv_payload_within_budget": null,
+    "transfer_time_within_budget": null,
+    "mac_memory_budget_sufficient": null,
+    "pgx_prefill_safe_without_chunking": null,
+    "over_threshold_rejected_before_pgx": null
+  }
+}

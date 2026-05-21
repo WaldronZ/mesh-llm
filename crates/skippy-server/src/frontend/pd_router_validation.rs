@@ -69,6 +69,53 @@ impl StageOpenAiBackend {
         mut on_token: impl FnMut(i32) -> OpenAiResult<PdRouterValidationTokenControl>,
     ) -> OpenAiResult<GenerationCacheStats> {
         let started = PhaseTimer::start();
+        match request.config.admission {
+            Some(policy) => {
+                let decision = policy.evaluate(request.prompt_token_ids.len(), request.max_tokens);
+                self.emit_pd_admission(
+                    request.ids,
+                    request.config.mode,
+                    decision.outcome(),
+                    started.elapsed_ms(),
+                );
+                match decision {
+                    PdAdmissionDecision::Admit(_) => {}
+                    PdAdmissionDecision::Fallback(_) => {
+                        return self.generate_local_tokens(
+                            LocalGeneration {
+                                prompt_token_ids: request.prompt_token_ids,
+                                max_tokens: request.max_tokens,
+                                sampling: request.sampling,
+                                chat_sampling_metadata: request.chat_sampling_metadata,
+                                hook_request: None,
+                                hook_runtime: None,
+                                cancellation: request.cancellation,
+                                ids: request.ids,
+                            },
+                            |token| on_token(token).map(|control| control.control),
+                        );
+                    }
+                    PdAdmissionDecision::Reject(outcome)
+                    | PdAdmissionDecision::Unavailable(outcome) => {
+                        return Err(pd_admission_rejection_error(&outcome));
+                    }
+                }
+            }
+            None if request.config.mode == PdServingMode::Mvp => {
+                let decision = pd_admission_missing_config_decision(
+                    request.prompt_token_ids.len(),
+                    request.max_tokens,
+                );
+                self.emit_pd_admission(
+                    request.ids,
+                    request.config.mode,
+                    decision.outcome(),
+                    started.elapsed_ms(),
+                );
+                return Err(pd_admission_rejection_error(decision.outcome()));
+            }
+            None => {}
+        }
         if request.config.inject_pre_content_failure() {
             let reason = if request.config.mode == PdServingMode::Mvp {
                 "pre_content_failure_injected"
@@ -805,6 +852,7 @@ mod tests {
             target_node_id: "mac-decode-validation".to_string(),
             fault_injection: PdRouterValidationFault::None,
             mvp_test_fault: PdServingMvpTestFault::None,
+            admission: None,
         }
     }
 

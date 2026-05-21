@@ -1280,6 +1280,16 @@ fn pd_serving_mvp_config_requires_explicit_roles_and_no_fault_hooks() {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "--pd-expected-chat-template-hash",
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-max-prompt-tokens",
+        "2048",
+        "--pd-max-prefill-batch",
+        "2048",
+        "--pd-max-ctx-size",
+        "8192",
+        "--pd-max-handoff-bytes",
+        "1073741824",
+        "--pd-estimated-kv-bytes-per-token",
+        "902000",
     ]);
     let crate::cli::Command::ServeOpenAi(args) = cli.command else {
         panic!("expected serve-openai command");
@@ -1420,6 +1430,16 @@ fn pd_serving_mvp_config_accepts_explicit_fields() {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "--pd-expected-chat-template-hash",
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-max-prompt-tokens",
+        "2048",
+        "--pd-max-prefill-batch",
+        "2048",
+        "--pd-max-ctx-size",
+        "8192",
+        "--pd-max-handoff-bytes",
+        "1073741824",
+        "--pd-estimated-kv-bytes-per-token",
+        "902000",
     ]);
     let crate::cli::Command::ServeOpenAi(args) = cli.command else {
         panic!("expected serve-openai command");
@@ -1430,6 +1450,54 @@ fn pd_serving_mvp_config_accepts_explicit_fields() {
     assert_eq!(config.target_node_id, "mac-decode-mvp");
     assert_eq!(config.fault_injection, PdRouterValidationFault::None);
     assert_eq!(config.mvp_test_fault, PdServingMvpTestFault::None);
+    let admission = config.admission.expect("mvp admission policy");
+    assert_eq!(admission.max_prompt_tokens, 2048);
+    assert_eq!(admission.max_prefill_batch, 2048);
+    assert_eq!(admission.max_ctx_size, 8192);
+    assert_eq!(admission.max_handoff_bytes, 1_073_741_824);
+    assert_eq!(admission.estimated_kv_bytes_per_token, Some(902_000));
+    assert_eq!(
+        admission.kv_bytes_per_token_source,
+        PdKvBytesPerTokenSource::Configured
+    );
+}
+
+#[test]
+fn pd_serving_mvp_config_requires_admission_policy() {
+    use clap::Parser as _;
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let error =
+        pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-serving-mvp requires --pd-max-prompt-tokens"),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -1456,6 +1524,16 @@ fn pd_serving_mvp_config_accepts_test_fault_only_with_explicit_allow() {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "--pd-expected-chat-template-hash",
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-max-prompt-tokens",
+        "2048",
+        "--pd-max-prefill-batch",
+        "2048",
+        "--pd-max-ctx-size",
+        "8192",
+        "--pd-max-handoff-bytes",
+        "1073741824",
+        "--pd-estimated-kv-bytes-per-token",
+        "902000",
         "--pd-serving-mvp-allow-test-faults",
         "--pd-serving-mvp-test-fault",
         "pre-content-failure",
@@ -1489,6 +1567,15 @@ fn pd_serving_status_is_sanitized_and_additive() {
         target_node_id: "private-decode-host.example".to_string(),
         fault_injection: PdRouterValidationFault::None,
         mvp_test_fault: PdServingMvpTestFault::None,
+        admission: Some(PdAdmissionPolicy {
+            max_prompt_tokens: 2048,
+            max_prefill_batch: 2048,
+            max_ctx_size: 8192,
+            max_handoff_bytes: 1_073_741_824,
+            estimated_kv_bytes_per_token: Some(902_000),
+            kv_bytes_per_token_source: PdKvBytesPerTokenSource::Configured,
+            over_limit_action: crate::cli::PdAdmissionOverLimitAction::Fallback,
+        }),
     };
     let status = pd_serving_status_for_start(&config, 1);
     let serialized = serde_json::to_value(&status).unwrap();
@@ -1499,6 +1586,16 @@ fn pd_serving_status_is_sanitized_and_additive() {
     assert_eq!(serialized["prefill_worker_role"], "mvp-prefill-worker");
     assert_eq!(serialized["decode_worker_role"], "mvp-decode-worker");
     assert_eq!(serialized["inflight_limit"], 1);
+    assert_eq!(serialized["admission_policy_configured"], true);
+    assert_eq!(serialized["admission_over_limit_action"], "fallback");
+    assert_eq!(serialized["max_prompt_tokens"], 2048);
+    assert_eq!(serialized["max_prefill_batch"], 2048);
+    assert_eq!(serialized["estimated_kv_bytes_per_token"], 902000);
+    assert_eq!(serialized["kv_bytes_per_token_source"], "configured");
+    assert_eq!(
+        serialized["effective_prompt_limit_without_generation"],
+        1190
+    );
     let serialized = serialized.to_string();
     assert!(!serialized.contains("private-prefill-host"));
     assert!(!serialized.contains("private-decode-host"));

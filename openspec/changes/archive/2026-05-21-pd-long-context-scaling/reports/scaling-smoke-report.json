@@ -1,0 +1,123 @@
+{
+  "result": "pass",
+  "recommendation": "keep_current_admission_guard_and_design_chunked_prefill_before_raising_limits",
+  "date": "2026-05-21",
+  "scope": {
+    "pd_serving_mvp": true,
+    "pd_router_validation": false,
+    "raised_n_batch": false,
+    "chunked_prefill": false,
+    "kv_compression_or_incremental_transfer": false,
+    "multi_worker_or_scheduler": false
+  },
+  "sanitization": {
+    "prompt_text": false,
+    "generated_content": false,
+    "complete_token_arrays": false,
+    "kv_payload_contents": false,
+    "credentials": false,
+    "private_paths": false,
+    "real_machine_names": false
+  },
+  "configuration": {
+    "pd_admission_over_limit": "reject",
+    "pd_max_prompt_tokens": 1800,
+    "pd_max_prefill_batch": 1800,
+    "pd_max_ctx_size": 8192,
+    "pd_max_handoff_bytes": 1073741824,
+    "pd_estimated_kv_bytes_per_token": 902000,
+    "pd_kv_bytes_per_token_source": "configured",
+    "pd_token_context_prefill_limit": 1800,
+    "pd_effective_prompt_limit": 1190,
+    "effective_limit_dominant_gate": "kv_bytes"
+  },
+  "binaries": {
+    "coordinator_router_decode_sha256": "aa7dc0f6067304ba1dcef28145eb1cae69994a175e07da7669651966dbdf9816",
+    "prefill_export_sha256": "b5dfb6cb16c5b99430e3461b3a56361edd927a38bf0036a2030e11e27086c283"
+  },
+  "cases": [
+    {
+      "case_id": "baseline-near-safe",
+      "prompt_tokens": 1050,
+      "expected": "admitted_pd_path_pass",
+      "observed": "admitted_pd_path_pass",
+      "http_status": 200,
+      "curl_time_total_s": 19.71421,
+      "telemetry": {
+        "pd.admission.result": "admitted",
+        "pd.admission.reason": "within_limits",
+        "pd.prompt_token_count": 1050,
+        "pd.estimated_kv_bytes": 947100000,
+        "pd.estimated_kv_bytes_per_token": 902000,
+        "pd.kv_bytes_per_token_source": "configured",
+        "pd.effective_prompt_limit": 1190,
+        "pd.max_prompt_tokens": 1800,
+        "pd.max_prefill_batch": 1800,
+        "pd.max_ctx_size": 8192,
+        "pd.max_handoff_bytes": 1073741824,
+        "pd.mvp.result": "pass",
+        "pd.kv_payload_bytes": 945301536,
+        "pd.kv_export_ms": 4420.772458,
+        "pd.kv_transfer_ms": 8154.415583,
+        "pd.kv_transfer_network_ms": 8154.415583,
+        "pd.kv_import_ms": 112.337166,
+        "pd.router_overhead_ms": 19630.817083,
+        "pd.ttft_ms": 16653.513125,
+        "pd.decode_tokens_per_sec": 10.360376
+      }
+    },
+    {
+      "case_id": "over-4k",
+      "prompt_tokens": 4000,
+      "expected": "reject_before_pgx",
+      "observed": "reject_before_pgx",
+      "http_status": 200,
+      "curl_time_total_s": 0.042382,
+      "telemetry": {
+        "pd.admission.result": "rejected",
+        "pd.admission.reason": "prompt_tokens_exceeded",
+        "pd.prompt_token_count": 4000,
+        "pd.estimated_kv_bytes": 3608000000,
+        "pd.estimated_kv_bytes_per_token": 902000,
+        "pd.kv_bytes_per_token_source": "configured",
+        "pd.effective_prompt_limit": 1190,
+        "pd.max_prompt_tokens": 1800,
+        "pd.max_prefill_batch": 1800,
+        "pd.max_ctx_size": 8192,
+        "pd.max_handoff_bytes": 1073741824,
+        "pd.mvp.result": "fail",
+        "pd.pre_content": true
+      }
+    },
+    {
+      "case_id": "over-8k",
+      "prompt_tokens": 8000,
+      "expected": "reject_before_pgx",
+      "observed": "reject_before_pgx",
+      "http_status": 200,
+      "curl_time_total_s": 0.076701,
+      "telemetry": {
+        "pd.admission.result": "rejected",
+        "pd.admission.reason": "prompt_tokens_exceeded",
+        "pd.prompt_token_count": 8000,
+        "pd.estimated_kv_bytes": 7216000000,
+        "pd.estimated_kv_bytes_per_token": 902000,
+        "pd.kv_bytes_per_token_source": "configured",
+        "pd.effective_prompt_limit": 1190,
+        "pd.max_prompt_tokens": 1800,
+        "pd.max_prefill_batch": 1800,
+        "pd.max_ctx_size": 8192,
+        "pd.max_handoff_bytes": 1073741824,
+        "pd.mvp.result": "fail",
+        "pd.pre_content": true
+      }
+    }
+  ],
+  "pgx_protection": {
+    "over_limit_cases_had_kv_export_telemetry": false,
+    "prefill_process_crashed": false,
+    "prefill_process_stopped_explicitly": true,
+    "ports_released_after_stop": true
+  },
+  "conclusion": "The calibrated admission ladder protects the current one-shot PD path from 4k/8k over-limit prompts. 4k/8k admission should wait for chunked prefill or another bounded long-context strategy."
+}

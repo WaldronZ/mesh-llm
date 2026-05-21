@@ -74,6 +74,7 @@ mod embedded_execution;
 mod embedded_generation;
 mod generation_flow;
 mod local_generation;
+mod pd_admission;
 #[cfg(test)]
 mod pd_hardening_tests;
 mod pd_router_validation;
@@ -85,7 +86,7 @@ mod speculative;
 mod util;
 mod wire_messages;
 
-use self::{prefill::*, request::*, speculative::*, util::*, wire_messages::*};
+use self::{pd_admission::*, prefill::*, request::*, speculative::*, util::*, wire_messages::*};
 
 static OPENAI_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -753,6 +754,7 @@ struct PdRouterValidationConfig {
     target_node_id: String,
     fault_injection: PdRouterValidationFault,
     mvp_test_fault: PdServingMvpTestFault,
+    admission: Option<PdAdmissionPolicy>,
 }
 
 impl PdRouterValidationConfig {
@@ -841,6 +843,7 @@ fn pd_router_validation_config_from_args(
         } else {
             PdServingMvpTestFault::None
         },
+        admission: pd_admission_policy_from_args(args, mode, model_id)?,
     };
     validate_pd_hash(
         &config.expected_artifact_sha256,
@@ -892,6 +895,15 @@ struct PdServingStatus {
     last_result: Option<&'static str>,
     last_fallback_reason: Option<&'static str>,
     last_failure_phase: Option<&'static str>,
+    admission_policy_configured: bool,
+    admission_over_limit_action: Option<&'static str>,
+    max_prompt_tokens: Option<usize>,
+    max_prefill_batch: Option<usize>,
+    max_ctx_size: Option<usize>,
+    max_handoff_bytes: Option<u64>,
+    estimated_kv_bytes_per_token: Option<u64>,
+    kv_bytes_per_token_source: Option<&'static str>,
+    effective_prompt_limit_without_generation: Option<usize>,
 }
 
 fn pd_serving_status_for_start(
@@ -917,6 +929,23 @@ fn pd_serving_status_for_start(
         last_result: None,
         last_fallback_reason: None,
         last_failure_phase: None,
+        admission_policy_configured: config.admission.is_some(),
+        admission_over_limit_action: config
+            .admission
+            .map(|policy| policy.over_limit_action.as_label()),
+        max_prompt_tokens: config.admission.map(|policy| policy.max_prompt_tokens),
+        max_prefill_batch: config.admission.map(|policy| policy.max_prefill_batch),
+        max_ctx_size: config.admission.map(|policy| policy.max_ctx_size),
+        max_handoff_bytes: config.admission.map(|policy| policy.max_handoff_bytes),
+        estimated_kv_bytes_per_token: config
+            .admission
+            .and_then(|policy| policy.estimated_kv_bytes_per_token),
+        kv_bytes_per_token_source: config
+            .admission
+            .map(|policy| policy.kv_bytes_per_token_source.label()),
+        effective_prompt_limit_without_generation: config
+            .admission
+            .and_then(|policy| policy.effective_prompt_limit(0)),
     }
 }
 
@@ -973,6 +1002,7 @@ fn emit_pd_serving_status(
         json!(status.capacity_state),
     );
     attrs.insert("pd.current_state".to_string(), json!(status.current_state));
+    insert_pd_admission_status_attrs(&mut attrs, config.admission.as_ref());
     telemetry.emit("stage.pd_serving_status", attrs);
 }
 

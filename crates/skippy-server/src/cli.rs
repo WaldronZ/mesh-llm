@@ -201,6 +201,38 @@ pub struct ServeOpenAiArgs {
     pub pd_serving_mvp_test_fault: PdServingMvpTestFault,
     #[arg(long, hide = true)]
     pub pd_serving_mvp_allow_test_faults: bool,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = PdAdmissionOverLimitAction::Fallback,
+        help = "PD serving admission behavior for over-limit prompts: fallback or reject."
+    )]
+    pub pd_admission_over_limit: PdAdmissionOverLimitAction,
+    #[arg(
+        long,
+        help = "Maximum prompt tokens admitted to the PD serving MVP lane."
+    )]
+    pub pd_max_prompt_tokens: Option<usize>,
+    #[arg(
+        long,
+        help = "Maximum PGX prefill batch tokens admitted to the PD serving MVP lane."
+    )]
+    pub pd_max_prefill_batch: Option<usize>,
+    #[arg(
+        long,
+        help = "Maximum context size admitted to the PD serving MVP lane."
+    )]
+    pub pd_max_ctx_size: Option<usize>,
+    #[arg(
+        long,
+        help = "Maximum estimated native KV handoff bytes admitted to the PD serving MVP lane."
+    )]
+    pub pd_max_handoff_bytes: Option<u64>,
+    #[arg(
+        long,
+        help = "Estimated native KV handoff bytes per prompt token for PD serving admission. If omitted, only calibrated model/topology defaults may be used."
+    )]
+    pub pd_estimated_kv_bytes_per_token: Option<u64>,
     #[arg(long, default_value_t = 256)]
     pub prefill_chunk_size: usize,
     #[arg(
@@ -230,6 +262,22 @@ pub struct ServeOpenAiArgs {
     pub telemetry_queue_capacity: usize,
     #[arg(long, value_enum, default_value_t = TelemetryLevel::Summary)]
     pub telemetry_level: TelemetryLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum PdAdmissionOverLimitAction {
+    Fallback,
+    Reject,
+}
+
+impl PdAdmissionOverLimitAction {
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Fallback => "fallback",
+            Self::Reject => "reject",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -276,7 +324,9 @@ impl PdServingMvpTestFault {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, PdRouterValidationFault, PdServingMvpTestFault};
+    use super::{
+        Cli, Command, PdAdmissionOverLimitAction, PdRouterValidationFault, PdServingMvpTestFault,
+    };
     use clap::Parser;
 
     #[test]
@@ -296,6 +346,15 @@ mod tests {
         assert_eq!(args.pd_fault_injection, PdRouterValidationFault::None);
         assert_eq!(args.pd_serving_mvp_test_fault, PdServingMvpTestFault::None);
         assert!(!args.pd_serving_mvp_allow_test_faults);
+        assert_eq!(
+            args.pd_admission_over_limit,
+            PdAdmissionOverLimitAction::Fallback
+        );
+        assert!(args.pd_max_prompt_tokens.is_none());
+        assert!(args.pd_max_prefill_batch.is_none());
+        assert!(args.pd_max_ctx_size.is_none());
+        assert!(args.pd_max_handoff_bytes.is_none());
+        assert!(args.pd_estimated_kv_bytes_per_token.is_none());
         assert!(args.pd_prefill_addr.is_none());
         assert!(args.pd_decode_addr.is_none());
     }
@@ -353,6 +412,18 @@ mod tests {
             "--pd-serving-mvp-allow-test-faults",
             "--pd-serving-mvp-test-fault",
             "post-content-failure",
+            "--pd-admission-over-limit",
+            "reject",
+            "--pd-max-prompt-tokens",
+            "2048",
+            "--pd-max-prefill-batch",
+            "2048",
+            "--pd-max-ctx-size",
+            "8192",
+            "--pd-max-handoff-bytes",
+            "1073741824",
+            "--pd-estimated-kv-bytes-per-token",
+            "902000",
         ]);
 
         let Command::ServeOpenAi(args) = cli.command else {
@@ -369,5 +440,14 @@ mod tests {
             args.pd_serving_mvp_test_fault,
             PdServingMvpTestFault::PostContentFailure
         );
+        assert_eq!(
+            args.pd_admission_over_limit,
+            PdAdmissionOverLimitAction::Reject
+        );
+        assert_eq!(args.pd_max_prompt_tokens, Some(2048));
+        assert_eq!(args.pd_max_prefill_batch, Some(2048));
+        assert_eq!(args.pd_max_ctx_size, Some(8192));
+        assert_eq!(args.pd_max_handoff_bytes, Some(1073741824));
+        assert_eq!(args.pd_estimated_kv_bytes_per_token, Some(902000));
     }
 }

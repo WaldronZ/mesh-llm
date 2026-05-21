@@ -1,4 +1,5 @@
 use super::*;
+use crate::cli::PdAdmissionOverLimitAction;
 use axum::response::IntoResponse;
 
 fn mvp_config() -> PdRouterValidationConfig {
@@ -19,6 +20,15 @@ fn mvp_config() -> PdRouterValidationConfig {
         target_node_id: "mac-decode-mvp".to_string(),
         fault_injection: PdRouterValidationFault::None,
         mvp_test_fault: PdServingMvpTestFault::None,
+        admission: Some(PdAdmissionPolicy {
+            max_prompt_tokens: 2048,
+            max_prefill_batch: 2048,
+            max_ctx_size: 8192,
+            max_handoff_bytes: 1_073_741_824,
+            estimated_kv_bytes_per_token: Some(902_000),
+            kv_bytes_per_token_source: PdKvBytesPerTokenSource::Configured,
+            over_limit_action: PdAdmissionOverLimitAction::Fallback,
+        }),
     }
 }
 
@@ -206,6 +216,18 @@ fn pd_mvp_status_reports_sanitized_health_capacity_and_compatibility() {
     assert_eq!(serialized["inflight_limit"], 1);
     assert_eq!(serialized["inflight_current"], 0);
     assert_eq!(serialized["capacity_state"], "open");
+    assert_eq!(serialized["admission_policy_configured"], true);
+    assert_eq!(serialized["admission_over_limit_action"], "fallback");
+    assert_eq!(serialized["max_prompt_tokens"], 2048);
+    assert_eq!(serialized["max_prefill_batch"], 2048);
+    assert_eq!(serialized["max_ctx_size"], 8192);
+    assert_eq!(serialized["max_handoff_bytes"], 1_073_741_824);
+    assert_eq!(serialized["estimated_kv_bytes_per_token"], 902000);
+    assert_eq!(serialized["kv_bytes_per_token_source"], "configured");
+    assert_eq!(
+        serialized["effective_prompt_limit_without_generation"],
+        1190
+    );
 
     let text = serialized.to_string();
     for forbidden in [
