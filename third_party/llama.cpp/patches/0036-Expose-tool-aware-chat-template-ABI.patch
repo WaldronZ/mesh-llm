@@ -4,9 +4,9 @@ Date: Tue, 5 May 2026 06:10:28 +1000
 Subject: [PATCH 36/80] Expose tool-aware chat template ABI
 
 ---
- common/stage-chat.cpp | 228 ++++++++++++++++++++++++++++++++++++++++++
+ common/stage-chat.cpp | 237 ++++++++++++++++++++++++++++++++++++++++++
  include/skippy.h      |  29 +++++-
- 2 files changed, 256 insertions(+), 1 deletion(-)
+ 2 files changed, 265 insertions(+), 1 deletion(-)
 
 diff --git a/common/stage-chat.cpp b/common/stage-chat.cpp
 index 60d53fc4..77d8fc8e 100644
@@ -29,7 +29,7 @@ index 60d53fc4..77d8fc8e 100644
  
  static skippy_error * skippy_common_make_error(enum skippy_status status, const char * message) {
      skippy_error * error = new skippy_error{};
-@@ -45,6 +50,86 @@ static enum skippy_status skippy_common_success(skippy_error ** out_error) {
+@@ -45,6 +50,95 @@ static enum skippy_status skippy_common_success(skippy_error ** out_error) {
      return SKIPPY_STATUS_OK;
  }
  
@@ -113,10 +113,19 @@ index 60d53fc4..77d8fc8e 100644
 +    };
 +}
 +
++static common_reasoning_format skippy_common_reasoning_format_for_metadata(
++        const common_chat_params & params,
++        const common_chat_templates_inputs & inputs) {
++    if (params.format == COMMON_CHAT_FORMAT_PEG_GEMMA4 && params.supports_thinking) {
++        return COMMON_REASONING_FORMAT_DEEPSEEK;
++    }
++    return inputs.reasoning_format;
++}
++
  enum skippy_status skippy_apply_chat_template(
          struct skippy_model * model,
          const struct llama_chat_message * messages,
-@@ -135,3 +220,146 @@ enum skippy_status skippy_apply_chat_template(
+@@ -135,3 +220,147 @@ enum skippy_status skippy_apply_chat_template(
      }
      return skippy_common_success(out_error);
  }
@@ -188,7 +197,8 @@ index 60d53fc4..77d8fc8e 100644
 +        prompt = params.prompt;
 +
 +        const bool parse_tool_calls = !inputs.tools.empty() && inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE;
-+        metadata = skippy_common_chat_metadata_json(params, inputs.reasoning_format, parse_tool_calls).dump();
++        const common_reasoning_format reasoning_format = skippy_common_reasoning_format_for_metadata(params, inputs);
++        metadata = skippy_common_chat_metadata_json(params, reasoning_format, parse_tool_calls).dump();
 +    } catch (const std::exception & e) {
 +        skippy_common_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, e.what());
 +        return SKIPPY_STATUS_UNSUPPORTED;

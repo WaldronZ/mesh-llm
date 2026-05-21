@@ -1,0 +1,22 @@
+From de8d3a63707da4589e7788ef82b3b918f153d704 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Thu, 21 May 2026 20:55:38 +0800
+Subject: [PATCH] Parse Gemma4 thinking channel as reasoning
+
+---
+ common/chat.cpp | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/common/chat.cpp b/common/chat.cpp
+index 70b9f5dc..1df7127e 100644
+--- a/common/chat.cpp
++++ b/common/chat.cpp
+@@ -1104,7 +1104,6 @@ static common_chat_params common_chat_params_init_gemma4(const common_chat_templ
+     auto has_tools           = inputs.tools.is_array() && !inputs.tools.empty();
+     auto has_response_format = !inputs.json_schema.is_null() && inputs.json_schema.is_object();
+     auto include_grammar     = has_response_format || (has_tools && inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE);
+-    auto extract_reasoning   = inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE;
+-
++    auto extract_reasoning   = inputs.enable_thinking || inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE;
+     auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
+         auto start = p.rule("start", p.prefix(inputs.generation_prompt, "<|channel>"));

@@ -35,11 +35,12 @@ use crate::{
     errors::OpenAiError,
     models::ModelsResponse,
     responses::{
-        chunk_delta_text, normalize_openai_compat_request,
+        chunk_delta_reasoning_text, chunk_delta_text, normalize_openai_compat_request,
         responses_stream_completed_event_with_sequence, responses_stream_content_part_added_event,
         responses_stream_content_part_done_event, responses_stream_created_event_with_sequence,
         responses_stream_delta_event_with_logprobs_and_sequence,
         responses_stream_output_item_added_event, responses_stream_output_item_done_event,
+        responses_stream_reasoning_delta_event_with_sequence,
         responses_stream_text_done_event_with_sequence,
         translate_chat_completion_response_to_responses, usage_to_responses_usage,
         ResponseAdapterMode, ResponseSseState,
@@ -270,6 +271,21 @@ async fn responses(
                                             &state_machine.item_id,
                                             &delta,
                                             logprobs,
+                                            sequence_number,
+                                        ),
+                                    )
+                                    .unwrap_or_else(|_| Event::default().data("{}")),
+                            );
+                        }
+                        if let Some(delta) = chunk_delta_reasoning_text(&chunk) {
+                            let sequence_number = state_machine.next_sequence_number();
+                            out.push(
+                                Event::default()
+                                    .event("response.reasoning_text.delta")
+                                    .json_data(
+                                        responses_stream_reasoning_delta_event_with_sequence(
+                                            &state_machine.item_id,
+                                            &delta,
                                             sequence_number,
                                         ),
                                     )
@@ -685,6 +701,31 @@ mod tests {
                         }],
                         usage: None,
                     }),
+                    Ok(ChatCompletionChunk::done(model)),
+                ])));
+            }
+            if request.model == "stream-reasoning" {
+                let model = request.model;
+                return Ok(Box::pin(stream::iter(vec![
+                    Ok(ChatCompletionChunk {
+                        id: "chatcmpl_stream_reasoning".to_string(),
+                        object: "chat.completion.chunk",
+                        created: 123,
+                        model: model.clone(),
+                        choices: vec![crate::chat::ChatCompletionChunkChoice {
+                            index: 0,
+                            delta: crate::chat::ChatCompletionDelta {
+                                role: None,
+                                content: None,
+                                reasoning_content: Some("thought-channel".to_string()),
+                                tool_calls: None,
+                            },
+                            logprobs: None,
+                            finish_reason: None,
+                        }],
+                        usage: None,
+                    }),
+                    Ok(ChatCompletionChunk::delta(model.clone(), "final answer")),
                     Ok(ChatCompletionChunk::done(model)),
                 ])));
             }
@@ -1330,6 +1371,26 @@ mod tests {
         let body = response_body_text(response).await;
         assert!(body.contains("event: response.output_text.delta"));
         assert!(body.contains(r#""logprobs":{"content":[{"logprob":-0.1,"token":"tok"}]}"#));
+    }
+
+    #[tokio::test]
+    async fn responses_stream_route_maps_chat_reasoning_to_reasoning_events() {
+        let response = post_json(
+            "/v1/responses",
+            json!({
+                "model": "stream-reasoning",
+                "input": "hi",
+                "stream": true
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_text(response).await;
+        assert!(body.contains("event: response.reasoning_text.delta"));
+        assert!(body.contains(r#""type":"response.reasoning_text.delta""#));
+        assert!(body.contains(r#""delta":"thought-channel""#));
+        assert!(body.contains("event: response.output_text.delta"));
+        assert!(body.contains(r#""delta":"final answer""#));
     }
 
     #[tokio::test]

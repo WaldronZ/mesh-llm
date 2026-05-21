@@ -965,6 +965,13 @@ pub fn chunk_delta_text(chunk: &ChatCompletionChunk) -> Option<String> {
         .and_then(|choice| choice.delta.content.clone())
 }
 
+pub fn chunk_delta_reasoning_text(chunk: &ChatCompletionChunk) -> Option<String> {
+    chunk
+        .choices
+        .first()
+        .and_then(|choice| choice.delta.reasoning_content.clone())
+}
+
 pub fn chunk_model<'a>(chunk: &'a ChatCompletionChunk, fallback: &'a str) -> &'a str {
     if chunk.model.is_empty() {
         fallback

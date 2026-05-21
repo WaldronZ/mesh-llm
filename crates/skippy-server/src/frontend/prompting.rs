@@ -53,10 +53,11 @@ impl StageOpenAiBackend {
                 },
             )
             .map_err(openai_backend_error)?;
+        let metadata_json = normalize_chat_parse_metadata(result.metadata_json);
         Ok(PreparedGenerationPrompt {
             text: result.prompt,
             media,
-            chat_parse_metadata: Some(result.metadata_json),
+            chat_parse_metadata: Some(metadata_json),
         })
     }
 
@@ -202,5 +203,87 @@ impl StageOpenAiBackend {
         self.hook_policy.is_some()
             && hook_runtime.is_some()
             && hook_request.as_ref().is_some_and(chat_mesh_hooks_enabled)
+    }
+}
+
+fn normalize_chat_parse_metadata(metadata_json: String) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(&metadata_json) else {
+        return metadata_json;
+    };
+
+    if gemma4_reasoning_channel_metadata(&value) && metadata_reasoning_format_is_none(&value) {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("reasoning_format".to_string(), json!("deepseek"));
+        }
+        return serde_json::to_string(&value).unwrap_or(metadata_json);
+    }
+
+    metadata_json
+}
+
+fn gemma4_reasoning_channel_metadata(value: &Value) -> bool {
+    let Some(tokens) = value.get("preserved_tokens").and_then(Value::as_array) else {
+        return false;
+    };
+    let has_channel_open = tokens
+        .iter()
+        .any(|token| token.as_str() == Some("<|channel>"));
+    let has_channel_close = tokens
+        .iter()
+        .any(|token| token.as_str() == Some("<channel|>"));
+    has_channel_open && has_channel_close
+}
+
+fn metadata_reasoning_format_is_none(value: &Value) -> bool {
+    match value.get("reasoning_format").and_then(Value::as_str) {
+        Some(format) => format.is_empty() || format == "none",
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemma4_channel_metadata_enables_reasoning_parser() {
+        let metadata = json!({
+            "chat_format": 2,
+            "reasoning_format": "none",
+            "preserved_tokens": ["<|channel>", "<channel|>", "<|turn>"]
+        })
+        .to_string();
+
+        let normalized = normalize_chat_parse_metadata(metadata);
+        let value: Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(value["reasoning_format"], "deepseek");
+    }
+
+    #[test]
+    fn non_channel_metadata_keeps_reasoning_format() {
+        let metadata = json!({
+            "chat_format": 1,
+            "reasoning_format": "none",
+            "preserved_tokens": ["<think>", "</think>"]
+        })
+        .to_string();
+
+        let normalized = normalize_chat_parse_metadata(metadata);
+        let value: Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(value["reasoning_format"], "none");
+    }
+
+    #[test]
+    fn existing_reasoning_format_is_preserved() {
+        let metadata = json!({
+            "chat_format": 2,
+            "reasoning_format": "deepseek",
+            "preserved_tokens": ["<|channel>", "<channel|>"]
+        })
+        .to_string();
+
+        let normalized = normalize_chat_parse_metadata(metadata);
+        let value: Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(value["reasoning_format"], "deepseek");
     }
 }
