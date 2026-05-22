@@ -1,0 +1,66 @@
+{
+  "change": "pd-kv-page-iswa-trim-support",
+  "result": "pass",
+  "recommendation": "return_to_pd_kv_page_handoff_spike_closure",
+  "foreground_smoke_run": true,
+  "streaming_kv_handoff": "not_implemented_blocker_cleared",
+  "scope_closure": "128_token_two_chunk_iswa_trim_pass",
+  "local_change": {
+    "durable_patch": "third_party/llama.cpp/patches/0083-Trim-direct-ISWA-KV-cache-sessions.patch",
+    "prepared_source": ".deps/llama.cpp/src/skippy.cpp",
+    "rust_api_changed": false,
+    "direct_llama_kv_cache_iswa_trim_supported": true,
+    "regular_path_changed": false,
+    "hybrid_path_changed": false,
+    "hybrid_iswa_path_changed": false,
+    "recurrent_path_changed": false
+  },
+  "root_cause": {
+    "category": "native_trim_wrapper_dispatch_gap",
+    "unsupported_memory_kind": "llama_kv_cache_iswa",
+    "previous_error": "runtime memory type is not supported for trim",
+    "backend_limitation": false
+  },
+  "expected_semantics": {
+    "cache_kind": "iswa",
+    "segments": ["base", "swa"],
+    "trim_primitive": "llama_kv_cache_iswa::seq_rm",
+    "fail_closed_on_seq_rm_failure": true
+  },
+  "local_validation": {
+    "patch_queue_clean_apply_check": "passed",
+    "cargo_fmt_all_check": "passed",
+    "cargo_test_skippy_runtime_lib": "passed",
+    "cargo_test_skippy_correctness": "passed",
+    "cargo_check_skippy_runtime": "passed",
+    "cargo_check_skippy_correctness": "passed",
+    "openspec_validate_pd_kv_page_iswa_trim_support_strict": "passed",
+    "openspec_validate_pd_kv_page_decode_bootstrap_strict": "passed",
+    "git_diff_check": "passed"
+  },
+  "foreground_result": {
+    "total_tokens": 128,
+    "chunk_tokens": 64,
+    "bootstrap_strategy": "trim-replay-last-token",
+    "source_exported_iswa_segments": true,
+    "target_imported_iswa_segments": true,
+    "trim_succeeded": true,
+    "replay_succeeded": true,
+    "logits_ready": true,
+    "decode_start_position": 128,
+    "page_path_decode_observed": true,
+    "exact_match_baseline": "pass",
+    "baseline_strategy": "local_one_shot_prefill_decode",
+    "remaining_failure_reason": null
+  },
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "real_machine_labels": "excluded",
+    "raw_pointers_or_device_addresses": "excluded"
+  }
+}

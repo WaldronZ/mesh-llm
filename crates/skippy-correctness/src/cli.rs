@@ -18,6 +18,7 @@ pub enum CommandKind {
     DtypeMatrix(DtypeMatrixArgs),
     StateHandoff(StateHandoffArgs),
     RouterValidation(RouterValidationArgs),
+    KvPageHandoff(KvPageHandoffArgs),
 }
 
 #[derive(Args, Clone)]
@@ -220,6 +221,124 @@ pub struct RouterValidationArgs {
     pub model_id: String,
     #[arg(long, default_value_t = 4096)]
     pub synthetic_payload_bytes: usize,
+}
+
+#[derive(Args)]
+pub struct KvPageHandoffArgs {
+    #[command(subcommand)]
+    pub role: KvPageHandoffRole,
+}
+
+#[derive(Subcommand)]
+pub enum KvPageHandoffRole {
+    Source(KvPageHandoffSourceArgs),
+    Coordinator(KvPageHandoffCoordinatorArgs),
+}
+
+#[derive(Args)]
+pub struct KvPageHandoffSourceArgs {
+    #[command(flatten)]
+    pub output: OutputArgs,
+    #[arg(long, default_value = "127.0.0.1:19430")]
+    pub bind_addr: SocketAddr,
+    #[arg(long)]
+    pub model: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "runtime-slice")]
+    pub stage_load_mode: StageLoadMode,
+    #[arg(long, default_value_t = 30)]
+    pub layer_end: u32,
+    #[arg(long, default_value_t = 512)]
+    pub ctx_size: u32,
+    #[arg(long, default_value_t = 0)]
+    pub n_gpu_layers: i32,
+    #[arg(long)]
+    pub n_batch: Option<u32>,
+    #[arg(long)]
+    pub n_ubatch: Option<u32>,
+    #[arg(long = "flash-attn", value_enum, default_value = "auto")]
+    pub flash_attn: FlashAttentionArg,
+    #[arg(long, default_value = "source")]
+    pub session_id: String,
+    #[arg(
+        long,
+        default_value = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )]
+    pub artifact_sha256: String,
+    #[arg(
+        long,
+        default_value = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )]
+    pub tokenizer_hash: String,
+    #[arg(
+        long,
+        default_value = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )]
+    pub chat_template_hash: String,
+    #[arg(long, default_value_t = 64)]
+    pub chunk_tokens: usize,
+    #[arg(long, default_value_t = 2)]
+    pub chunk_count: usize,
+}
+
+#[derive(Args)]
+pub struct KvPageHandoffCoordinatorArgs {
+    #[command(flatten)]
+    pub output: OutputArgs,
+    #[arg(long)]
+    pub markdown_out: Option<PathBuf>,
+    #[arg(long, default_value = "127.0.0.1:19430")]
+    pub source_addr: SocketAddr,
+    #[arg(long)]
+    pub model: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "runtime-slice")]
+    pub stage_load_mode: StageLoadMode,
+    #[arg(long, default_value_t = 30)]
+    pub layer_end: u32,
+    #[arg(long, default_value_t = 512)]
+    pub ctx_size: u32,
+    #[arg(long, default_value_t = 0)]
+    pub n_gpu_layers: i32,
+    #[arg(long)]
+    pub n_batch: Option<u32>,
+    #[arg(long)]
+    pub n_ubatch: Option<u32>,
+    #[arg(long = "flash-attn", value_enum, default_value = "auto")]
+    pub flash_attn: FlashAttentionArg,
+    #[arg(long, default_value = "source")]
+    pub session_id: String,
+    #[arg(
+        long,
+        default_value = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )]
+    pub artifact_sha256: String,
+    #[arg(
+        long,
+        default_value = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )]
+    pub tokenizer_hash: String,
+    #[arg(
+        long,
+        default_value = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )]
+    pub chat_template_hash: String,
+    #[arg(long, default_value = "synthetic-two-chunk")]
+    pub prompt_id: String,
+    #[arg(long, default_value_t = 128)]
+    pub total_tokens: usize,
+    #[arg(long, default_value_t = 64)]
+    pub chunk_tokens: usize,
+    #[arg(long, default_value_t = 16)]
+    pub max_tokens: usize,
+    #[arg(long, default_value_t = 42)]
+    pub seed: u64,
+    #[arg(long, value_enum, default_value = "trim-replay-last-token")]
+    pub bootstrap_strategy: KvPageBootstrapStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum KvPageBootstrapStrategy {
+    TrimReplayLastToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

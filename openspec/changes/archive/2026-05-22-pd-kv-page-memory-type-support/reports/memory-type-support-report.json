@@ -1,0 +1,58 @@
+{
+  "result": "pass",
+  "recommendation": "return_to_pd_kv_page_handoff_spike_closure",
+  "scope": {
+    "local_runtime_patch": "complete",
+    "foreground_smoke": "rerun_two_chunk_pass",
+    "four_k_or_eight_k": "deferred_future_validation",
+    "streaming_kv_handoff": "not_implemented_blocker_cleared"
+  },
+  "root_cause": {
+    "blocked_phase": "source_export_kv_page",
+    "previous_error": "runtime memory type is not supported for native KV pages",
+    "reason": "native wrapper rejected ISWA KV memory before backend tensor copy"
+  },
+  "foreground_rerun": {
+    "old_memory_kind_blocker_reproduced": false,
+    "source_exported_page_segments": true,
+    "page_count": 4,
+    "cache_kind": "iswa",
+    "segment_kinds_observed": [
+      "base",
+      "swa"
+    ],
+    "mac_import_reached": true,
+    "page_path_decode_completed": true,
+    "decode_start_position": 128,
+    "baseline_strategy": "local_one_shot_prefill_decode",
+    "baseline_comparison": "exact_token_match",
+    "failure_phase": null,
+    "failure_reason": null
+  },
+  "memory_object_labels": [
+    "llama_kv_cache",
+    "llama_kv_cache_iswa",
+    "llama_memory_hybrid",
+    "llama_memory_hybrid_iswa",
+    "unknown"
+  ],
+  "page_segments": {
+    "regular": [
+      "regular"
+    ],
+    "iswa": [
+      "base",
+      "swa"
+    ]
+  },
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "real_machine_labels": "excluded",
+    "raw_pointers_or_device_addresses": "excluded"
+  }
+}

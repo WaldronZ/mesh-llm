@@ -1,0 +1,55 @@
+{
+  "result": "pass",
+  "recommendation": "proceed_to_streaming_handoff_design_or_apply",
+  "phase": "128_token_two_chunk_foreground_pass",
+  "local_checks": {
+    "positive_two_page_manifest_validation": "pass",
+    "source_coordinator_cli_shape": "pass",
+    "test_harness_frame_roundtrip": "pass",
+    "source_without_model_is_not_pass": "pass",
+    "missing_page": "fail_closed",
+    "duplicate_page": "fail_closed",
+    "out_of_order_page": "fail_closed",
+    "position_gap": "fail_closed",
+    "position_overlap": "fail_closed",
+    "checksum_mismatch": "fail_closed",
+    "dtype_layout_mismatch": "fail_closed",
+    "identity_mismatch": "fail_closed",
+    "full_state_blob_as_page_handoff": "rejected",
+    "sanitized_report_shape": "pass"
+  },
+  "runtime_checks": {
+    "source_runtime_loop": "foreground_verified",
+    "coordinator_runtime_loop": "foreground_verified",
+    "test_harness_transport": "implemented_local_tested",
+    "pgx_export_kv_page_chunk_0": "observed",
+    "pgx_export_kv_page_chunk_1": "observed",
+    "mac_ordered_import_kv_page": "observed",
+    "final_decode_start_position_from_native_pages": 128,
+    "one_shot_baseline_comparison": "exact_token_match",
+    "real_import_failure": "local_negative_covered_foreground_not_repeated",
+    "four_k_validation": "deferred_future_validation",
+    "eight_k_validation": "deferred_future_validation",
+    "pd_streaming_kv_handoff": "not_implemented_blocker_cleared"
+  },
+  "report_fields": [
+    "page_count",
+    "total_page_bytes",
+    "page_export_ms",
+    "page_transfer_ms",
+    "page_import_ms",
+    "validation_result",
+    "failure_reason",
+    "recommendation"
+  ],
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "endpoint_urls": "excluded",
+    "real_machine_labels": "excluded"
+  }
+}

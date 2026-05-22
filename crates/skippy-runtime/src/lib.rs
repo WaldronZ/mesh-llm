@@ -15,7 +15,8 @@ use serde_json::Value;
 use skippy_ffi::{
     ActivationDType, ActivationDesc as RawActivationDesc, ActivationLayout,
     ChatMessage as RawChatMessage, Error as RawError,
-    GenerationSignalWindow as RawGenerationSignalWindow, KvPageDesc as RawKvPageDesc, LoadMode,
+    GenerationSignalWindow as RawGenerationSignalWindow, KvPageDesc as RawKvPageDesc,
+    KvPageMemoryKind as RawKvPageMemoryKind, KvPageSegmentKind as RawKvPageSegmentKind, LoadMode,
     LogitBias as RawLogitBias, Model as RawModel, ModelInfo as RawModelInfo,
     RuntimeConfig as RawRuntimeConfig, SamplingConfig as RawSamplingConfig, Session as RawSession,
     SlicePlan as RawSlicePlan, Status, TensorInfo as RawTensorInfo, TensorRole,
@@ -32,6 +33,10 @@ pub const GGML_TYPE_Q4_0: u32 = 2;
 pub const GGML_TYPE_Q8_0: u32 = 8;
 pub const LLAMA_SERVER_DEFAULT_N_BATCH: u32 = 2048;
 pub const LLAMA_SERVER_DEFAULT_N_UBATCH: u32 = 512;
+pub const RUNTIME_KV_PAGE_FLAG_CACHE_ISWA: u64 = 1 << 1;
+pub const RUNTIME_KV_PAGE_FLAG_SEGMENT_BASE: u64 = 1 << 2;
+pub const RUNTIME_KV_PAGE_FLAG_SEGMENT_SWA: u64 = 1 << 3;
+pub const RUNTIME_KV_PAGE_FLAG_SEGMENT_EMPTY: u64 = 1 << 4;
 
 /// GGML_LLAMA_LOG_LEVEL values (set before llama_backend_init).
 /// 0=silent, 1=error, 2=warn, 3=info (default), 4=debug.
@@ -927,6 +932,79 @@ pub struct ActivationFrame {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeKvPageMemoryKind {
+    Unknown,
+    LlamaKvCache,
+    LlamaKvCacheIswa,
+    LlamaMemoryHybrid,
+    LlamaMemoryHybridIswa,
+}
+
+impl RuntimeKvPageMemoryKind {
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::LlamaKvCache => "llama_kv_cache",
+            Self::LlamaKvCacheIswa => "llama_kv_cache_iswa",
+            Self::LlamaMemoryHybrid => "llama_memory_hybrid",
+            Self::LlamaMemoryHybridIswa => "llama_memory_hybrid_iswa",
+        }
+    }
+}
+
+impl From<RawKvPageMemoryKind> for RuntimeKvPageMemoryKind {
+    fn from(value: RawKvPageMemoryKind) -> Self {
+        match value {
+            RawKvPageMemoryKind::LlamaKvCache => Self::LlamaKvCache,
+            RawKvPageMemoryKind::LlamaKvCacheIswa => Self::LlamaKvCacheIswa,
+            RawKvPageMemoryKind::LlamaMemoryHybrid => Self::LlamaMemoryHybrid,
+            RawKvPageMemoryKind::LlamaMemoryHybridIswa => Self::LlamaMemoryHybridIswa,
+            RawKvPageMemoryKind::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeKvPageCacheKind {
+    Regular,
+    Iswa,
+}
+
+impl RuntimeKvPageCacheKind {
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::Iswa => "iswa",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeKvPageSegmentKind {
+    Regular,
+    Base,
+    Swa,
+}
+
+impl RuntimeKvPageSegmentKind {
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::Base => "base",
+            Self::Swa => "swa",
+        }
+    }
+
+    fn as_raw(self) -> RawKvPageSegmentKind {
+        match self {
+            Self::Regular => RawKvPageSegmentKind::Regular,
+            Self::Base => RawKvPageSegmentKind::IswaBase,
+            Self::Swa => RawKvPageSegmentKind::IswaSwa,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeKvPageDesc {
     pub version: u32,
     pub layer_start: i32,
@@ -944,6 +1022,28 @@ pub struct RuntimeKvPageDesc {
 }
 
 impl RuntimeKvPageDesc {
+    pub fn cache_kind(&self) -> RuntimeKvPageCacheKind {
+        if self.flags & RUNTIME_KV_PAGE_FLAG_CACHE_ISWA != 0 {
+            RuntimeKvPageCacheKind::Iswa
+        } else {
+            RuntimeKvPageCacheKind::Regular
+        }
+    }
+
+    pub fn segment_kind(&self) -> RuntimeKvPageSegmentKind {
+        let base = self.flags & RUNTIME_KV_PAGE_FLAG_SEGMENT_BASE != 0;
+        let swa = self.flags & RUNTIME_KV_PAGE_FLAG_SEGMENT_SWA != 0;
+        match (self.cache_kind(), base, swa) {
+            (RuntimeKvPageCacheKind::Iswa, true, false) => RuntimeKvPageSegmentKind::Base,
+            (RuntimeKvPageCacheKind::Iswa, false, true) => RuntimeKvPageSegmentKind::Swa,
+            _ => RuntimeKvPageSegmentKind::Regular,
+        }
+    }
+
+    pub fn segment_empty(&self) -> bool {
+        self.flags & RUNTIME_KV_PAGE_FLAG_SEGMENT_EMPTY != 0
+    }
+
     fn as_raw(&self) -> RawKvPageDesc {
         RawKvPageDesc {
             version: self.version,
@@ -3083,12 +3183,80 @@ impl StageSession {
         token_start: u64,
         token_count: u64,
     ) -> Result<RuntimeKvPage> {
+        self.export_kv_page_for_segment(
+            RuntimeKvPageSegmentKind::Regular,
+            layer_start,
+            layer_end,
+            token_start,
+            token_count,
+        )
+    }
+
+    pub fn kv_page_memory_kind(&mut self) -> Result<RuntimeKvPageMemoryKind> {
+        let mut kind = RawKvPageMemoryKind::Unknown;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_query_kv_page_memory_kind(self.raw, &mut kind, &mut error)
+        };
+        ensure_ok(status, error)?;
+        Ok(kind.into())
+    }
+
+    pub fn export_kv_page_segments(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<Vec<RuntimeKvPage>> {
+        match self.kv_page_memory_kind()? {
+            RuntimeKvPageMemoryKind::LlamaKvCache | RuntimeKvPageMemoryKind::LlamaMemoryHybrid => {
+                Ok(vec![self.export_kv_page_for_segment(
+                    RuntimeKvPageSegmentKind::Regular,
+                    layer_start,
+                    layer_end,
+                    token_start,
+                    token_count,
+                )?])
+            }
+            RuntimeKvPageMemoryKind::LlamaKvCacheIswa
+            | RuntimeKvPageMemoryKind::LlamaMemoryHybridIswa => Ok(vec![
+                self.export_kv_page_for_segment(
+                    RuntimeKvPageSegmentKind::Base,
+                    layer_start,
+                    layer_end,
+                    token_start,
+                    token_count,
+                )?,
+                self.export_kv_page_for_segment(
+                    RuntimeKvPageSegmentKind::Swa,
+                    layer_start,
+                    layer_end,
+                    token_start,
+                    token_count,
+                )?,
+            ]),
+            RuntimeKvPageMemoryKind::Unknown => {
+                anyhow::bail!("native KV page memory kind is unsupported: unknown")
+            }
+        }
+    }
+
+    fn export_kv_page_for_segment(
+        &mut self,
+        segment_kind: RuntimeKvPageSegmentKind,
+        layer_start: i32,
+        layer_end: i32,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<RuntimeKvPage> {
         let mut desc = RawKvPageDesc::default();
         let mut bytes = 0usize;
         let mut error = ptr::null_mut();
         let status = unsafe {
-            skippy_ffi::skippy_export_kv_page(
+            skippy_ffi::skippy_export_kv_page_segment(
                 self.raw,
+                segment_kind.as_raw(),
                 layer_start,
                 layer_end,
                 token_start,
@@ -3110,8 +3278,9 @@ impl StageSession {
         let mut written = 0usize;
         let mut error = ptr::null_mut();
         let status = unsafe {
-            skippy_ffi::skippy_export_kv_page(
+            skippy_ffi::skippy_export_kv_page_segment(
                 self.raw,
+                segment_kind.as_raw(),
                 layer_start,
                 layer_end,
                 token_start,
@@ -3492,8 +3661,11 @@ mod tests {
         redirect_native_logs_to_file, register_filtered_native_logs, restore_native_logs,
         set_filtered_native_logs_enabled, unregister_filtered_native_logs, write_native_log,
         ChatTemplateMessage, FlashAttentionType, ModelInfo, NativeLogAggregator, NativeLogEvent,
-        RuntimeConfig, RuntimeLoadMode, StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0,
-        GGML_TYPE_Q8_0,
+        RuntimeConfig, RuntimeKvPageCacheKind, RuntimeKvPageDesc, RuntimeKvPageMemoryKind,
+        RuntimeKvPageSegmentKind, RuntimeLoadMode, StageModel, TensorRole, GGML_TYPE_F16,
+        GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, RUNTIME_KV_PAGE_FLAG_CACHE_ISWA,
+        RUNTIME_KV_PAGE_FLAG_SEGMENT_BASE, RUNTIME_KV_PAGE_FLAG_SEGMENT_EMPTY,
+        RUNTIME_KV_PAGE_FLAG_SEGMENT_SWA,
     };
 
     static NATIVE_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3540,6 +3712,61 @@ mod tests {
         assert_eq!(parse_cache_type("q8_0")?, GGML_TYPE_Q8_0);
         assert_eq!(parse_cache_type("q4_0")?, GGML_TYPE_Q4_0);
         Ok(())
+    }
+
+    #[test]
+    fn kv_page_desc_labels_regular_and_iswa_segments() {
+        let regular = RuntimeKvPageDesc {
+            version: 1,
+            layer_start: 0,
+            layer_end: 4,
+            token_start: 0,
+            token_count: 8,
+            layer_count: 4,
+            k_type: GGML_TYPE_F16,
+            v_type: GGML_TYPE_F16,
+            k_row_bytes: 16,
+            v_row_bytes: 16,
+            v_element_bytes: 0,
+            payload_bytes: 256,
+            flags: 0,
+        };
+        assert_eq!(regular.cache_kind(), RuntimeKvPageCacheKind::Regular);
+        assert_eq!(regular.segment_kind(), RuntimeKvPageSegmentKind::Regular);
+        assert!(!regular.segment_empty());
+
+        let base = RuntimeKvPageDesc {
+            flags: RUNTIME_KV_PAGE_FLAG_CACHE_ISWA | RUNTIME_KV_PAGE_FLAG_SEGMENT_BASE,
+            ..regular
+        };
+        assert_eq!(base.cache_kind(), RuntimeKvPageCacheKind::Iswa);
+        assert_eq!(base.segment_kind(), RuntimeKvPageSegmentKind::Base);
+
+        let swa = RuntimeKvPageDesc {
+            flags: RUNTIME_KV_PAGE_FLAG_CACHE_ISWA
+                | RUNTIME_KV_PAGE_FLAG_SEGMENT_SWA
+                | RUNTIME_KV_PAGE_FLAG_SEGMENT_EMPTY,
+            ..regular
+        };
+        assert_eq!(swa.segment_kind(), RuntimeKvPageSegmentKind::Swa);
+        assert!(swa.segment_empty());
+    }
+
+    #[test]
+    fn kv_page_memory_kind_labels_are_sanitized() {
+        for kind in [
+            RuntimeKvPageMemoryKind::Unknown,
+            RuntimeKvPageMemoryKind::LlamaKvCache,
+            RuntimeKvPageMemoryKind::LlamaKvCacheIswa,
+            RuntimeKvPageMemoryKind::LlamaMemoryHybrid,
+            RuntimeKvPageMemoryKind::LlamaMemoryHybridIswa,
+        ] {
+            let label = kind.as_label();
+            assert!(!label.is_empty());
+            assert!(label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_'));
+        }
     }
 
     struct FlushCountingWriter {

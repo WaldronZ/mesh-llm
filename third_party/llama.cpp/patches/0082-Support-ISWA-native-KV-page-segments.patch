@@ -1,0 +1,302 @@
+From 4c0e02ce8628cd53a4c1a8a094e717af48bf45f8 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Thu, 21 May 2026 23:45:31 +0800
+Subject: [PATCH] Support ISWA native KV page segments
+
+---
+ include/skippy.h |  36 ++++++++++
+ src/skippy.cpp   | 166 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 199 insertions(+), 3 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 486e95dc..5a35658f 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -11,6 +11,24 @@ extern "C" {
+ 
+ enum skippy_kv_page_flag {
+     SKIPPY_KV_PAGE_FLAG_V_TRANSPOSED      = 1 << 0,
++    SKIPPY_KV_PAGE_FLAG_CACHE_ISWA        = 1 << 1,
++    SKIPPY_KV_PAGE_FLAG_SEGMENT_BASE      = 1 << 2,
++    SKIPPY_KV_PAGE_FLAG_SEGMENT_SWA       = 1 << 3,
++    SKIPPY_KV_PAGE_FLAG_SEGMENT_EMPTY     = 1 << 4,
++};
++
++enum skippy_kv_page_memory_kind {
++    SKIPPY_KV_PAGE_MEMORY_KIND_UNKNOWN                = 0,
++    SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_KV_CACHE         = 1,
++    SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_KV_CACHE_ISWA    = 2,
++    SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_MEMORY_HYBRID    = 3,
++    SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_MEMORY_HYBRID_ISWA = 4,
++};
++
++enum skippy_kv_page_segment_kind {
++    SKIPPY_KV_PAGE_SEGMENT_KIND_REGULAR   = 0,
++    SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_BASE = 1,
++    SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_SWA  = 2,
+ };
+ 
+ enum skippy_load_mode {
+@@ -432,6 +450,19 @@ LLAMA_API enum skippy_status skippy_export_kv_page(
+         size_t * out_bytes,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_export_kv_page_segment(
++        struct skippy_session * session,
++        enum skippy_kv_page_segment_kind segment_kind,
++        int32_t layer_start,
++        int32_t layer_end,
++        uint64_t token_start,
++        uint64_t token_count,
++        struct skippy_kv_page_desc * out_desc,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_import_kv_page(
+         struct skippy_session * session,
+         const struct skippy_kv_page_desc * desc,
+@@ -439,6 +470,11 @@ LLAMA_API enum skippy_status skippy_import_kv_page(
+         size_t input_bytes,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_query_kv_page_memory_kind(
++        struct skippy_session * session,
++        enum skippy_kv_page_memory_kind * out_kind,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_session_save_prefix(
+         struct skippy_session * session,
+         int32_t cache_seq_id,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index f25da57e..d34c2ec8 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -8,6 +8,7 @@
+ #include "llama-context.h"
+ #include "llama-graph.h"
+ #include "llama-kv-cache.h"
++#include "llama-kv-cache-iswa.h"
+ #include "llama-memory-hybrid.h"
+ #include "llama-memory-hybrid-iswa.h"
+ #include "llama-memory-recurrent.h"
+@@ -3335,8 +3336,72 @@ enum skippy_status skippy_import_recurrent_state(
+     return skippy_success(out_error);
+ }
+ 
++static const char * skippy_kv_memory_kind_label(skippy_kv_page_memory_kind kind) {
++    switch (kind) {
++        case SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_KV_CACHE:
++            return "llama_kv_cache";
++        case SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_KV_CACHE_ISWA:
++            return "llama_kv_cache_iswa";
++        case SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_MEMORY_HYBRID:
++            return "llama_memory_hybrid";
++        case SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_MEMORY_HYBRID_ISWA:
++            return "llama_memory_hybrid_iswa";
++        case SKIPPY_KV_PAGE_MEMORY_KIND_UNKNOWN:
++        default:
++            return "unknown";
++    }
++}
++
++static skippy_kv_page_memory_kind skippy_detect_kv_memory_kind(llama_memory_t memory) {
++    if (memory == nullptr) {
++        return SKIPPY_KV_PAGE_MEMORY_KIND_UNKNOWN;
++    }
++    if (dynamic_cast<llama_memory_hybrid_iswa *>(memory) != nullptr) {
++        return SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_MEMORY_HYBRID_ISWA;
++    }
++    if (dynamic_cast<llama_memory_hybrid *>(memory) != nullptr) {
++        return SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_MEMORY_HYBRID;
++    }
++    if (dynamic_cast<llama_kv_cache_iswa *>(memory) != nullptr) {
++        return SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_KV_CACHE_ISWA;
++    }
++    if (dynamic_cast<llama_kv_cache *>(memory) != nullptr) {
++        return SKIPPY_KV_PAGE_MEMORY_KIND_LLAMA_KV_CACHE;
++    }
++    return SKIPPY_KV_PAGE_MEMORY_KIND_UNKNOWN;
++}
++
++static uint64_t skippy_segment_flags(skippy_kv_page_segment_kind segment_kind) {
++    switch (segment_kind) {
++        case SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_BASE:
++            return SKIPPY_KV_PAGE_FLAG_CACHE_ISWA | SKIPPY_KV_PAGE_FLAG_SEGMENT_BASE;
++        case SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_SWA:
++            return SKIPPY_KV_PAGE_FLAG_CACHE_ISWA | SKIPPY_KV_PAGE_FLAG_SEGMENT_SWA;
++        case SKIPPY_KV_PAGE_SEGMENT_KIND_REGULAR:
++        default:
++            return 0;
++    }
++}
++
++static skippy_kv_page_segment_kind skippy_segment_kind_from_desc(const skippy_kv_page_desc & desc) {
++    const bool iswa = (desc.flags & SKIPPY_KV_PAGE_FLAG_CACHE_ISWA) != 0;
++    const bool base = (desc.flags & SKIPPY_KV_PAGE_FLAG_SEGMENT_BASE) != 0;
++    const bool swa  = (desc.flags & SKIPPY_KV_PAGE_FLAG_SEGMENT_SWA) != 0;
++    if (!iswa && !base && !swa) {
++        return SKIPPY_KV_PAGE_SEGMENT_KIND_REGULAR;
++    }
++    if (iswa && base && !swa) {
++        return SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_BASE;
++    }
++    if (iswa && swa && !base) {
++        return SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_SWA;
++    }
++    return static_cast<skippy_kv_page_segment_kind>(-1);
++}
++
+ static llama_kv_cache * skippy_get_kv_cache(
+         skippy_session * session,
++        skippy_kv_page_segment_kind segment_kind,
+         skippy_error ** out_error) {
+     if (session == nullptr || session->ctx == nullptr) {
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
+@@ -3349,21 +3414,81 @@ static llama_kv_cache * skippy_get_kv_cache(
+         return nullptr;
+     }
+ 
++    const skippy_kv_page_memory_kind memory_kind = skippy_detect_kv_memory_kind(memory);
++
++    if (auto * hybrid_iswa = dynamic_cast<llama_memory_hybrid_iswa *>(memory)) {
++        llama_kv_cache_iswa * kv_iswa = hybrid_iswa->get_mem_attn();
++        if (kv_iswa == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime has no attention KV cache for memory kind llama_memory_hybrid_iswa");
++            return nullptr;
++        }
++        switch (segment_kind) {
++            case SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_BASE:
++                return kv_iswa->get_base();
++            case SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_SWA:
++                return kv_iswa->get_swa();
++            case SKIPPY_KV_PAGE_SEGMENT_KIND_REGULAR:
++            default:
++                skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime memory kind llama_memory_hybrid_iswa requires native KV page segment export");
++                return nullptr;
++        }
++    }
+     if (auto * hybrid = dynamic_cast<llama_memory_hybrid *>(memory)) {
+         llama_kv_cache * kv = hybrid->get_mem_attn();
+         if (kv == nullptr) {
+             skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime has no attention KV cache");
++            return nullptr;
++        }
++        if (segment_kind != SKIPPY_KV_PAGE_SEGMENT_KIND_REGULAR) {
++            skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "native KV page segment is not supported for memory kind llama_memory_hybrid");
++            return nullptr;
+         }
+         return kv;
+     }
++    if (auto * kv_iswa = dynamic_cast<llama_kv_cache_iswa *>(memory)) {
++        switch (segment_kind) {
++            case SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_BASE:
++                return kv_iswa->get_base();
++            case SKIPPY_KV_PAGE_SEGMENT_KIND_ISWA_SWA:
++                return kv_iswa->get_swa();
++            case SKIPPY_KV_PAGE_SEGMENT_KIND_REGULAR:
++            default:
++                skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime memory kind llama_kv_cache_iswa requires native KV page segment export");
++                return nullptr;
++        }
++    }
+     if (auto * kv = dynamic_cast<llama_kv_cache *>(memory)) {
++        if (segment_kind != SKIPPY_KV_PAGE_SEGMENT_KIND_REGULAR) {
++            skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "native KV page segment is not supported for memory kind llama_kv_cache");
++            return nullptr;
++        }
+         return kv;
+     }
+ 
+-    skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime memory type is not supported for native KV pages");
++    std::string error = "runtime memory kind ";
++    error += skippy_kv_memory_kind_label(memory_kind);
++    error += " is not supported for native KV pages";
++    skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, error.c_str());
+     return nullptr;
+ }
+ 
++enum skippy_status skippy_query_kv_page_memory_kind(
++        struct skippy_session * session,
++        enum skippy_kv_page_memory_kind * out_kind,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr || out_kind == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and out_kind are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    llama_memory_t memory = session->ctx->get_memory();
++    if (memory == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "runtime memory is unavailable");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    *out_kind = skippy_detect_kv_memory_kind(memory);
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_export_kv_page(
+         struct skippy_session * session,
+         int32_t layer_start,
+@@ -3375,7 +3500,33 @@ enum skippy_status skippy_export_kv_page(
+         size_t output_capacity,
+         size_t * out_bytes,
+         struct skippy_error ** out_error) {
+-    llama_kv_cache * kv = skippy_get_kv_cache(session, out_error);
++    return skippy_export_kv_page_segment(
++            session,
++            SKIPPY_KV_PAGE_SEGMENT_KIND_REGULAR,
++            layer_start,
++            layer_end,
++            token_start,
++            token_count,
++            out_desc,
++            output,
++            output_capacity,
++            out_bytes,
++            out_error);
++}
++
++enum skippy_status skippy_export_kv_page_segment(
++        struct skippy_session * session,
++        enum skippy_kv_page_segment_kind segment_kind,
++        int32_t layer_start,
++        int32_t layer_end,
++        uint64_t token_start,
++        uint64_t token_count,
++        struct skippy_kv_page_desc * out_desc,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error) {
++    llama_kv_cache * kv = skippy_get_kv_cache(session, segment_kind, out_error);
+     if (kv == nullptr) {
+         return out_error != nullptr && *out_error != nullptr ? (*out_error)->status : SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+@@ -3399,6 +3550,9 @@ enum skippy_status skippy_export_kv_page(
+         skippy_set_error(out_error, status, error.c_str());
+         return status;
+     }
++    if (out_desc != nullptr) {
++        out_desc->flags |= skippy_segment_flags(segment_kind);
++    }
+     if (output == nullptr || (out_bytes != nullptr && *out_bytes > output_capacity)) {
+         skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "native KV page output buffer is too small");
+         return SKIPPY_STATUS_BUFFER_TOO_SMALL;
+@@ -3418,7 +3572,13 @@ enum skippy_status skippy_import_kv_page(
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+ 
+-    llama_kv_cache * kv = skippy_get_kv_cache(session, out_error);
++    const skippy_kv_page_segment_kind segment_kind = skippy_segment_kind_from_desc(*desc);
++    if (static_cast<int>(segment_kind) < 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "native KV page descriptor has invalid cache segment flags");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    llama_kv_cache * kv = skippy_get_kv_cache(session, segment_kind, out_error);
+     if (kv == nullptr) {
+         return out_error != nullptr && *out_error != nullptr ? (*out_error)->status : SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+-- 
+2.39.5 (Apple Git-154)
+

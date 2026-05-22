@@ -1,0 +1,44 @@
+{
+  "mode": "pd-kv-page-baseline-harness",
+  "result": "pass",
+  "recommendation": "return_to_pd_kv_page_handoff_spike_closure",
+  "scope": {
+    "local_harness_implemented": true,
+    "foreground_smoke_run": true,
+    "ran_4k": false,
+    "ran_8k": false,
+    "four_k_or_eight_k": "deferred_future_validation",
+    "streaming_kv_handoff": "not_implemented_blocker_cleared"
+  },
+  "root_cause": {
+    "phase": "one_shot_baseline_restore",
+    "reason": "source session occupied the single execution lane while restore session was created",
+    "classified_as": "baseline_harness_lifecycle_issue"
+  },
+  "implementation": {
+    "baseline_strategy": "local_one_shot_prefill_decode",
+    "full_state_restore_primary_baseline": false,
+    "full_state_handoff_allowed_as_page_pass": false,
+    "baseline_unavailable_result": "inconclusive",
+    "bounded_divergence_metadata": true
+  },
+  "foreground_result": {
+    "foreground_128_token_two_chunk_smoke": true,
+    "baseline_strategy": "local_one_shot_prefill_decode",
+    "baseline_completed": true,
+    "page_path_exact_match_baseline": true,
+    "full_state_handoff_allowed_as_page_pass": false,
+    "pd_streaming_kv_handoff_ready_for_reassessment": true
+  },
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "endpoint_urls": "excluded",
+    "real_machine_labels": "excluded",
+    "raw_pointers_or_device_addresses": "excluded"
+  }
+}

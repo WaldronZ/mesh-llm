@@ -165,6 +165,26 @@ pub enum MtmdInputChunkType {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KvPageMemoryKind {
+    #[default]
+    Unknown = 0,
+    LlamaKvCache = 1,
+    LlamaKvCacheIswa = 2,
+    LlamaMemoryHybrid = 3,
+    LlamaMemoryHybridIswa = 4,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KvPageSegmentKind {
+    #[default]
+    Regular = 0,
+    IswaBase = 1,
+    IswaSwa = 2,
+}
+
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MtmdDecoderPos {
     pub t: u32,
@@ -623,11 +643,31 @@ extern "C" {
         out_error: *mut *mut Error,
     ) -> Status;
 
+    pub fn skippy_export_kv_page_segment(
+        session: *mut Session,
+        segment_kind: KvPageSegmentKind,
+        layer_start: i32,
+        layer_end: i32,
+        token_start: u64,
+        token_count: u64,
+        out_desc: *mut KvPageDesc,
+        output: *mut c_void,
+        output_capacity: usize,
+        out_bytes: *mut usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
     pub fn skippy_import_kv_page(
         session: *mut Session,
         desc: *const KvPageDesc,
         input: *const c_void,
         input_bytes: usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_query_kv_page_memory_kind(
+        session: *mut Session,
+        out_kind: *mut KvPageMemoryKind,
         out_error: *mut *mut Error,
     ) -> Status;
 

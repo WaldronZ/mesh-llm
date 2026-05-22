@@ -1,0 +1,154 @@
+{
+  "mode": "pd-kv-page-handoff-spike",
+  "role": "coordinator",
+  "result": "pass",
+  "recommendation": "proceed_to_streaming_handoff",
+  "runtime_path": {
+    "source_runtime_export_kv_page": "observed",
+    "target_runtime_import_kv_page": "observed",
+    "network_transport": "test_harness_json_plus_payload",
+    "full_state_handoff_allowed_as_pass": false
+  },
+  "local_manifest_validation": {
+    "status": "pass",
+    "phase": "foreground_runtime_manifest_validation",
+    "reason": "native page import decode matched one-shot baseline"
+  },
+  "negative_checks": [
+    {
+      "case": "missing_page",
+      "status": "pass",
+      "failure_reason": "missing_page"
+    },
+    {
+      "case": "duplicate_page",
+      "status": "pass",
+      "failure_reason": "duplicate_page"
+    },
+    {
+      "case": "out_of_order_page",
+      "status": "pass",
+      "failure_reason": "out_of_order_page"
+    },
+    {
+      "case": "position_gap",
+      "status": "pass",
+      "failure_reason": "position_gap"
+    },
+    {
+      "case": "position_overlap",
+      "status": "pass",
+      "failure_reason": "position_overlap"
+    },
+    {
+      "case": "checksum_mismatch",
+      "status": "pass",
+      "failure_reason": "checksum"
+    },
+    {
+      "case": "dtype_mismatch",
+      "status": "pass",
+      "failure_reason": "dtype"
+    },
+    {
+      "case": "layout_mismatch",
+      "status": "pass",
+      "failure_reason": "layout"
+    },
+    {
+      "case": "artifact_mismatch",
+      "status": "pass",
+      "failure_reason": "artifact_sha256"
+    },
+    {
+      "case": "tokenizer_mismatch",
+      "status": "pass",
+      "failure_reason": "tokenizer_hash"
+    },
+    {
+      "case": "chat_template_mismatch",
+      "status": "pass",
+      "failure_reason": "chat_template_hash"
+    },
+    {
+      "case": "cache_kind_mismatch",
+      "status": "pass",
+      "failure_reason": "cache_kind"
+    },
+    {
+      "case": "segment_kind_mismatch",
+      "status": "pass",
+      "failure_reason": "segment_kind"
+    },
+    {
+      "case": "full_state_blob",
+      "status": "pass",
+      "failure_reason": "full_state_blob"
+    }
+  ],
+  "bootstrap": {
+    "status": "pass",
+    "strategy": "trim_replay_last_token",
+    "imported_token_count": 128,
+    "trim_target_position": 127,
+    "replay_token_position": 127,
+    "bootstrap_eval_ms": 105.870833,
+    "logits_ready": true,
+    "decode_start_position": 128,
+    "failure_reason": null
+  },
+  "telemetry_shape": {
+    "page_count": 4,
+    "total_page_bytes": 115343360,
+    "page_export_ms": [
+      1090.52744,
+      1090.52744,
+      768.317008,
+      768.317008
+    ],
+    "page_transfer_ms": [
+      0.197875,
+      0.197875,
+      0.16370800000000002,
+      0.16370800000000002
+    ],
+    "page_import_ms": [
+      1.517333,
+      14.28725,
+      1.427041,
+      14.305458
+    ],
+    "decode_ttft_after_import_ms": 1506.0388329999998
+  },
+  "baseline": {
+    "deterministic_settings": {
+      "temperature": 0.0,
+      "seed": 42,
+      "max_tokens": 16,
+      "prompt_id": "synthetic-two-chunk",
+      "prompt_token_count": 128,
+      "chunk_tokens": 64
+    },
+    "strategy": "local_one_shot_prefill_decode",
+    "one_shot_full_state_baseline": "not_used",
+    "page_handoff_decode": "observed",
+    "comparison": "exact_token_match",
+    "failure_reason": null,
+    "first_divergence_index": null,
+    "baseline_token_id": null,
+    "page_token_id": null,
+    "baseline_token_count": 16,
+    "page_token_count": 16
+  },
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "endpoint_urls": "excluded",
+    "real_machine_labels": "excluded"
+  },
+  "remaining_authorization_required": []
+}

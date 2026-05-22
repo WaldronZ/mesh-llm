@@ -78,6 +78,8 @@ mod pd_admission;
 mod pd_chunked_prefill;
 #[cfg(test)]
 mod pd_hardening_tests;
+#[cfg(test)]
+mod pd_kv_page_handoff;
 mod pd_router_validation;
 mod prefill;
 mod prefix_cache;

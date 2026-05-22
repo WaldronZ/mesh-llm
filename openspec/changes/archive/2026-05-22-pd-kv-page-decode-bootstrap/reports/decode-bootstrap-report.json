@@ -1,0 +1,43 @@
+{
+  "mode": "pd-kv-page-decode-bootstrap",
+  "result": "pass",
+  "recommendation": "return_to_pd_kv_page_handoff_spike_closure",
+  "bootstrap_strategy": "trim_replay_last_token",
+  "foreground_smoke_run": true,
+  "ran_4k": false,
+  "ran_8k": false,
+  "streaming_kv_handoff": "not_implemented_blocker_cleared",
+  "scope_closure": "128_token_two_chunk_decode_bootstrap_pass",
+  "full_state_handoff_allowed_as_pass": false,
+  "local_implementation": {
+    "trim_target": "N-1",
+    "replay_token_position": "N-1",
+    "decode_start_position_after_replay": "N",
+    "logits_ready_after_replay": true
+  },
+  "foreground_result": {
+    "page_import_completed_before_bootstrap": true,
+    "trim_attempted": true,
+    "trim_succeeded": true,
+    "replay_attempted": true,
+    "replay_succeeded": true,
+    "page_path_decode_observed": true,
+    "logits_ready": true,
+    "decode_start_position": 128,
+    "failure_reason": null,
+    "baseline_strategy": "local_one_shot_prefill_decode",
+    "baseline_comparison": "exact_token_match"
+  },
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "endpoint_urls": "excluded",
+    "real_machine_labels": "excluded",
+    "raw_pointers": "excluded",
+    "device_addresses": "excluded"
+  }
+}

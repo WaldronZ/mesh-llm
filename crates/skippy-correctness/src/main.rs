@@ -1,4 +1,5 @@
 mod cli;
+mod kv_page_handoff;
 mod report;
 mod router_validation;
 mod runner;
@@ -9,6 +10,7 @@ use clap::Parser;
 
 use crate::{
     cli::{Cli, CommandKind},
+    kv_page_handoff::kv_page_handoff,
     router_validation::router_validation,
     runner::{chain, dtype_matrix, single_step, split_scan, state_handoff},
 };
@@ -21,5 +23,6 @@ fn main() -> Result<()> {
         CommandKind::DtypeMatrix(args) => dtype_matrix(args),
         CommandKind::StateHandoff(args) => state_handoff(args),
         CommandKind::RouterValidation(args) => router_validation(args),
+        CommandKind::KvPageHandoff(args) => kv_page_handoff(args),
     }
 }

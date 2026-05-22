@@ -1,0 +1,28 @@
+From 7b1bc79ef83d6f9372ce45f937681a99d7eaa083 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Fri, 22 May 2026 00:00:00 +0800
+Subject: [PATCH] Trim direct ISWA KV cache sessions
+
+---
+ src/skippy.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index d34c2ec8..b6d20782 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -3634,6 +3634,11 @@ enum skippy_status skippy_trim_session(
+             skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim hybrid ISWA attention KV suffix");
+             return SKIPPY_STATUS_RUNTIME_ERROR;
+         }
++    } else if (auto * kv_iswa = dynamic_cast<llama_kv_cache_iswa *>(memory)) {
++        if (!kv_iswa->seq_rm(session->seq_id, p0, -1)) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim native ISWA KV suffix");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
+     } else if (auto * kv = dynamic_cast<llama_kv_cache *>(memory)) {
+         if (!kv->seq_rm(session->seq_id, p0, -1)) {
+             skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim native KV suffix");
+-- 
+2.39.5
+
