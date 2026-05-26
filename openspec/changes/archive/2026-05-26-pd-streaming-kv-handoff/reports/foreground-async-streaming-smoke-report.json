@@ -1,0 +1,189 @@
+{
+  "mode": "pd-streaming-kv-handoff",
+  "role": "async_coordinator",
+  "result": "pass",
+  "recommendation": "proceed_to_4k_streaming_smoke",
+  "protocol": "pd-kv-stream/1",
+  "runtime_path": {
+    "source_runtime_export_kv_page": "observed",
+    "target_runtime_import_kv_page": "observed",
+    "network_transport": "test_harness_full_duplex_control_and_page_stream",
+    "full_state_handoff_allowed_as_pass": false
+  },
+  "local_controller": {
+    "lifecycle_model": "live_async_control_channel_bounded_page_stream_importer_final_gate",
+    "out_of_order_policy": "fail_closed",
+    "final_gate": "all_chunks_contiguous_imported_bootstrap_ready_before_decode",
+    "full_state_handoff_allowed_as_pass": false
+  },
+  "bootstrap": {
+    "status": "pass",
+    "strategy": "trim_replay_last_token",
+    "imported_token_count": 128,
+    "trim_target_position": 127,
+    "replay_token_position": 127,
+    "bootstrap_eval_ms": 3364.9995000000004,
+    "logits_ready": true,
+    "decode_start_position": 128,
+    "failure_reason": null
+  },
+  "baseline": {
+    "strategy": "local_one_shot_prefill_decode",
+    "comparison": "exact_token_match",
+    "failure_reason": null,
+    "first_divergence_index": null,
+    "baseline_token_id": null,
+    "streaming_token_id": null,
+    "baseline_token_count": 16,
+    "streaming_token_count": 16
+  },
+  "telemetry": {
+    "chunk_count": 2,
+    "chunk_tokens": [
+      64,
+      64
+    ],
+    "per_chunk_prefill_ms": [
+      18275.790624,
+      1428.055183999997
+    ],
+    "per_chunk_export_ms": [
+      16.517391999997926,
+      14.78134399999908
+    ],
+    "per_chunk_transfer_ms": [
+      499.40100099999836,
+      500.02166699999725
+    ],
+    "per_chunk_import_ms": [
+      8.476625000002969,
+      8.002417000003334
+    ],
+    "prefill_start_ms": [
+      2.772625,
+      18795.182791
+    ],
+    "prefill_end_ms": [
+      18279.036333,
+      19778.793875000003
+    ],
+    "export_start_ms": [
+      18279.099208000003,
+      19778.868791
+    ],
+    "export_end_ms": [
+      18295.623416000002,
+      19791.423208
+    ],
+    "transfer_start_ms": [
+      18295.636416,
+      19791.439083
+    ],
+    "transfer_end_ms": [
+      18795.0535,
+      20291.470125
+    ],
+    "import_start_ms": [
+      18353.549334,
+      19843.139292
+    ],
+    "import_end_ms": [
+      18842.052959,
+      20318.730334
+    ],
+    "overlap_ms": 46.870168000001286,
+    "actual_overlap_ms": 46.870168000001286,
+    "pipeline_idle_ms": 0.0,
+    "source_idle_ms": 0.0,
+    "importer_idle_ms": 0.0,
+    "backpressure_wait_ms": 0.0,
+    "in_flight_bytes": 0,
+    "page_queue_depth": 2,
+    "page_bytes_per_chunk": [
+      57671680,
+      57671680
+    ],
+    "bytes_per_token": 901120.0,
+    "final_decode_start_position": 128,
+    "validation_result": "pass",
+    "failure_reason": null
+  },
+  "negative_checks": [
+    {
+      "case": "duplicate_chunk",
+      "status": "pass",
+      "failure_reason": "duplicate_chunk_export"
+    },
+    {
+      "case": "missing_chunk",
+      "status": "pass",
+      "failure_reason": "missing_chunk"
+    },
+    {
+      "case": "out_of_order_chunk",
+      "status": "pass",
+      "failure_reason": "out_of_order_chunk_import"
+    },
+    {
+      "case": "position_gap",
+      "status": "pass",
+      "failure_reason": "position_gap"
+    },
+    {
+      "case": "position_overlap",
+      "status": "pass",
+      "failure_reason": "position_overlap"
+    },
+    {
+      "case": "checksum_mismatch",
+      "status": "pass",
+      "failure_reason": "checksum"
+    },
+    {
+      "case": "max_in_flight_bytes",
+      "status": "pass",
+      "failure_reason": "max_in_flight_bytes"
+    },
+    {
+      "case": "import_failure",
+      "status": "pass",
+      "failure_reason": "import_failure"
+    },
+    {
+      "case": "incomplete_final_gate",
+      "status": "pass",
+      "failure_reason": "missing_chunk"
+    },
+    {
+      "case": "full_state_blob",
+      "status": "pass",
+      "failure_reason": "full_state_blob"
+    },
+    {
+      "case": "source_failure_cancels_importer",
+      "status": "pass",
+      "failure_reason": "source_failure"
+    },
+    {
+      "case": "importer_failure_cancels_source",
+      "status": "pass",
+      "failure_reason": "import_failure"
+    },
+    {
+      "case": "page_queue_depth",
+      "status": "pass",
+      "failure_reason": "backpressure"
+    }
+  ],
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "endpoint_urls": "excluded",
+    "real_machine_labels": "excluded"
+  },
+  "remaining_authorization_required": []
+}

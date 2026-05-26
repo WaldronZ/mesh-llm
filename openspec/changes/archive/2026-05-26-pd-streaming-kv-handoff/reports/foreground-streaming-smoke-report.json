@@ -1,0 +1,152 @@
+{
+  "mode": "pd-streaming-kv-handoff",
+  "role": "coordinator",
+  "result": "pass",
+  "recommendation": "proceed_to_4k_streaming_smoke",
+  "protocol": "pd-kv-stream/1",
+  "runtime_path": {
+    "source_runtime_export_kv_page": "observed",
+    "target_runtime_import_kv_page": "observed",
+    "network_transport": "test_harness_json_plus_payload",
+    "full_state_handoff_allowed_as_pass": false
+  },
+  "local_controller": {
+    "lifecycle_model": "prefill_chunk_n_export_stream_import_before_next_chunk_final_contiguous_gate",
+    "out_of_order_policy": "fail_closed",
+    "final_gate": "all_chunks_contiguous_imported_bootstrap_ready_before_decode",
+    "full_state_handoff_allowed_as_pass": false
+  },
+  "foreground_evidence": {
+    "scope": "128-token / 64+64 foreground streaming smoke",
+    "chunk0_import_completed_before_final_gate": true,
+    "chunk0_import_completed_before_chunk1_final_import": true,
+    "chunk1_import_completed": true,
+    "final_contiguous_gate": "pass",
+    "page_segment_count_observed": 4,
+    "page_segment_shape": "Gemma4 ISWA: two page segments per 64-token chunk",
+    "measurable_overlap_ms": 0,
+    "overlap_note": "small serial two-chunk harness; concurrent overlap deferred to 4k smoke"
+  },
+  "bootstrap": {
+    "status": "pass",
+    "strategy": "trim_replay_last_token",
+    "imported_token_count": 128,
+    "trim_target_position": 127,
+    "replay_token_position": 127,
+    "bootstrap_eval_ms": 106.926625,
+    "logits_ready": true,
+    "decode_start_position": 128,
+    "failure_reason": null
+  },
+  "baseline": {
+    "strategy": "local_one_shot_prefill_decode",
+    "comparison": "exact_token_match",
+    "failure_reason": null,
+    "first_divergence_index": null,
+    "baseline_token_id": null,
+    "streaming_token_id": null,
+    "baseline_token_count": 16,
+    "streaming_token_count": 16
+  },
+  "telemetry": {
+    "chunk_count": 2,
+    "chunk_tokens": [
+      64,
+      64
+    ],
+    "per_chunk_prefill_ms": [
+      553.384016,
+      27.915024
+    ],
+    "per_chunk_export_ms": [
+      556.911552,
+      716.57216
+    ],
+    "per_chunk_transfer_ms": [
+      1170.267416,
+      444.82579100000004,
+      796.7155,
+      446.561625
+    ],
+    "per_chunk_import_ms": [
+      2.158708,
+      14.71875,
+      1.708291,
+      14.268333
+    ],
+    "overlap_ms": 0.0,
+    "pipeline_idle_ms": 0.0,
+    "in_flight_bytes": 0,
+    "page_bytes_per_chunk": [
+      57671680,
+      57671680
+    ],
+    "bytes_per_token": 901120.0,
+    "final_decode_start_position": 128,
+    "validation_result": "pass",
+    "failure_reason": null
+  },
+  "negative_checks": [
+    {
+      "case": "duplicate_chunk",
+      "status": "pass",
+      "failure_reason": "duplicate_chunk_export"
+    },
+    {
+      "case": "missing_chunk",
+      "status": "pass",
+      "failure_reason": "missing_chunk"
+    },
+    {
+      "case": "out_of_order_chunk",
+      "status": "pass",
+      "failure_reason": "out_of_order_chunk_import"
+    },
+    {
+      "case": "position_gap",
+      "status": "pass",
+      "failure_reason": "position_gap"
+    },
+    {
+      "case": "position_overlap",
+      "status": "pass",
+      "failure_reason": "position_overlap"
+    },
+    {
+      "case": "checksum_mismatch",
+      "status": "pass",
+      "failure_reason": "checksum"
+    },
+    {
+      "case": "max_in_flight_bytes",
+      "status": "pass",
+      "failure_reason": "max_in_flight_bytes"
+    },
+    {
+      "case": "import_failure",
+      "status": "pass",
+      "failure_reason": "import_failure"
+    },
+    {
+      "case": "incomplete_final_gate",
+      "status": "pass",
+      "failure_reason": "missing_chunk"
+    },
+    {
+      "case": "full_state_blob",
+      "status": "pass",
+      "failure_reason": "full_state_blob"
+    }
+  ],
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "endpoint_urls": "excluded",
+    "real_machine_labels": "excluded"
+  },
+  "remaining_authorization_required": []
+}

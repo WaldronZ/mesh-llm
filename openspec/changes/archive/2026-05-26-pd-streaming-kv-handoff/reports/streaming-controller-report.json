@@ -1,0 +1,113 @@
+{
+  "mode": "pd-streaming-kv-handoff",
+  "result": "inconclusive",
+  "recommendation": "ready_for_foreground_streaming_smoke",
+  "protocol": "pd-kv-stream/1",
+  "local_controller": {
+    "lifecycle_model": "prefill_chunk_n_export_stream_import_before_next_chunk_final_contiguous_gate",
+    "out_of_order_policy": "fail_closed",
+    "final_gate": "all_chunks_contiguous_imported_bootstrap_ready_before_decode",
+    "full_state_handoff_allowed_as_pass": false
+  },
+  "telemetry": {
+    "chunk_count": 2,
+    "chunk_tokens": [
+      64,
+      64
+    ],
+    "per_chunk_prefill_ms": [
+      1.0,
+      2.0
+    ],
+    "per_chunk_export_ms": [
+      0.25,
+      0.25
+    ],
+    "per_chunk_transfer_ms": [
+      0.15,
+      0.15
+    ],
+    "per_chunk_import_ms": [
+      0.35,
+      0.35
+    ],
+    "overlap_ms": 0.25,
+    "pipeline_idle_ms": 0.0,
+    "in_flight_bytes": 0,
+    "page_bytes_per_chunk": [
+      4096,
+      4096
+    ],
+    "bytes_per_token": 64.0,
+    "final_decode_start_position": 128,
+    "validation_result": "pass",
+    "failure_reason": null
+  },
+  "negative_checks": [
+    {
+      "case": "duplicate_chunk",
+      "status": "pass",
+      "failure_reason": "duplicate_chunk_export"
+    },
+    {
+      "case": "missing_chunk",
+      "status": "pass",
+      "failure_reason": "missing_chunk"
+    },
+    {
+      "case": "out_of_order_chunk",
+      "status": "pass",
+      "failure_reason": "out_of_order_chunk_import"
+    },
+    {
+      "case": "position_gap",
+      "status": "pass",
+      "failure_reason": "position_gap"
+    },
+    {
+      "case": "position_overlap",
+      "status": "pass",
+      "failure_reason": "position_overlap"
+    },
+    {
+      "case": "checksum_mismatch",
+      "status": "pass",
+      "failure_reason": "checksum"
+    },
+    {
+      "case": "max_in_flight_bytes",
+      "status": "pass",
+      "failure_reason": "max_in_flight_bytes"
+    },
+    {
+      "case": "import_failure",
+      "status": "pass",
+      "failure_reason": "import_failure"
+    },
+    {
+      "case": "incomplete_final_gate",
+      "status": "pass",
+      "failure_reason": "missing_chunk"
+    },
+    {
+      "case": "full_state_blob",
+      "status": "pass",
+      "failure_reason": "full_state_blob"
+    }
+  ],
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "endpoint_urls": "excluded",
+    "real_machine_labels": "excluded"
+  },
+  "remaining_authorization_required": [
+    "run PGX/Mac foreground streaming smoke",
+    "compare streaming decode against one-shot handoff baseline",
+    "validate 4k before optional 8k"
+  ]
+}

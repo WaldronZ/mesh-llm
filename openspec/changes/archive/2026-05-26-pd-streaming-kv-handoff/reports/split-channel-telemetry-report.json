@@ -1,0 +1,244 @@
+{
+  "mode": "pd-streaming-kv-handoff",
+  "role": "local_split_channel_controller",
+  "result": "inconclusive",
+  "recommendation": "ready_for_split_channel_4k_smoke",
+  "protocol": "pd-kv-stream/1",
+  "runtime_path": {
+    "source_runtime_export_kv_page": "not_run",
+    "target_runtime_import_kv_page": "not_run",
+    "network_transport": "split_control_channel_and_page_stream_ready_not_started",
+    "full_state_handoff_allowed_as_pass": false
+  },
+  "local_controller": {
+    "lifecycle_model": "split_channel_control_events_bounded_page_stream_importer_final_gate",
+    "out_of_order_policy": "fail_closed",
+    "final_gate": "all_chunks_contiguous_imported_bootstrap_ready_before_decode",
+    "full_state_handoff_allowed_as_pass": false
+  },
+  "bootstrap": {
+    "status": "not_run",
+    "strategy": "trim_replay_last_token",
+    "imported_token_count": null,
+    "trim_target_position": null,
+    "replay_token_position": null,
+    "bootstrap_eval_ms": null,
+    "logits_ready": false,
+    "decode_start_position": null,
+    "failure_reason": "local_controller_only"
+  },
+  "baseline": {
+    "strategy": "local_one_shot_prefill_decode",
+    "comparison": "not_run",
+    "failure_reason": "local_controller_only",
+    "first_divergence_index": null,
+    "baseline_token_id": null,
+    "streaming_token_id": null,
+    "baseline_token_count": null,
+    "streaming_token_count": null
+  },
+  "telemetry": {
+    "chunk_count": 2,
+    "chunk_tokens": [
+      64,
+      64
+    ],
+    "per_chunk_prefill_ms": [
+      12.0,
+      13.0
+    ],
+    "per_chunk_export_ms": [
+      4.0,
+      5.0
+    ],
+    "per_chunk_transfer_ms": [
+      1.0,
+      1.0
+    ],
+    "per_chunk_import_ms": [
+      20.0,
+      20.0
+    ],
+    "prefill_start_ms": [
+      0.0,
+      16.0
+    ],
+    "prefill_end_ms": [
+      12.0,
+      29.0
+    ],
+    "export_start_ms": [
+      12.0,
+      29.0
+    ],
+    "export_end_ms": [
+      16.0,
+      34.0
+    ],
+    "transfer_start_ms": [
+      16.0,
+      34.0
+    ],
+    "transfer_end_ms": [
+      17.0,
+      35.0
+    ],
+    "import_start_ms": [
+      17.0,
+      37.0
+    ],
+    "import_end_ms": [
+      37.0,
+      57.0
+    ],
+    "source_prefill_start_ms": [
+      0.0,
+      16.0
+    ],
+    "source_prefill_end_ms": [
+      12.0,
+      29.0
+    ],
+    "source_export_start_ms": [
+      12.0,
+      29.0
+    ],
+    "source_export_end_ms": [
+      16.0,
+      34.0
+    ],
+    "page_write_start_ms": [
+      16.0,
+      34.0
+    ],
+    "page_write_end_ms": [
+      17.0,
+      35.0
+    ],
+    "page_write_ms": [
+      1.0,
+      1.0
+    ],
+    "flush_ms": [
+      1.0,
+      1.0
+    ],
+    "writer_queue_send_wait_ms": 0.0,
+    "source_queue_depth": 2,
+    "source_backpressure_wait_ms": 0.0,
+    "control_event_emit_ms": [
+      0.0,
+      16.0
+    ],
+    "control_event_receive_ms": [
+      0.0,
+      16.0
+    ],
+    "control_event_lag_ms": [
+      0.0,
+      0.0
+    ],
+    "source_relative_overlap_ms": 18.0,
+    "coordinator_observed_overlap_ms": 18.0,
+    "true_compute_transfer_overlap_ms": 18.0,
+    "clock_alignment_status": "simulated_same_clock",
+    "overlap_ms": 18.0,
+    "actual_overlap_ms": 18.0,
+    "pipeline_idle_ms": 17.0,
+    "source_idle_ms": 0.0,
+    "importer_idle_ms": 17.0,
+    "backpressure_wait_ms": 0.0,
+    "in_flight_bytes": 0,
+    "page_queue_depth": 2,
+    "page_bytes_per_chunk": [
+      4096,
+      4096
+    ],
+    "bytes_per_token": 64.0,
+    "final_decode_start_position": 128,
+    "validation_result": "pass",
+    "failure_reason": null
+  },
+  "negative_checks": [
+    {
+      "case": "duplicate_chunk",
+      "status": "pass",
+      "failure_reason": "duplicate_chunk_export"
+    },
+    {
+      "case": "missing_chunk",
+      "status": "pass",
+      "failure_reason": "missing_chunk"
+    },
+    {
+      "case": "out_of_order_chunk",
+      "status": "pass",
+      "failure_reason": "out_of_order_chunk_import"
+    },
+    {
+      "case": "position_gap",
+      "status": "pass",
+      "failure_reason": "position_gap"
+    },
+    {
+      "case": "position_overlap",
+      "status": "pass",
+      "failure_reason": "position_overlap"
+    },
+    {
+      "case": "checksum_mismatch",
+      "status": "pass",
+      "failure_reason": "checksum"
+    },
+    {
+      "case": "max_in_flight_bytes",
+      "status": "pass",
+      "failure_reason": "max_in_flight_bytes"
+    },
+    {
+      "case": "import_failure",
+      "status": "pass",
+      "failure_reason": "import_failure"
+    },
+    {
+      "case": "incomplete_final_gate",
+      "status": "pass",
+      "failure_reason": "missing_chunk"
+    },
+    {
+      "case": "full_state_blob",
+      "status": "pass",
+      "failure_reason": "full_state_blob"
+    },
+    {
+      "case": "source_failure_cancels_importer",
+      "status": "pass",
+      "failure_reason": "source_failure"
+    },
+    {
+      "case": "importer_failure_cancels_source",
+      "status": "pass",
+      "failure_reason": "import_failure"
+    },
+    {
+      "case": "page_queue_depth",
+      "status": "pass",
+      "failure_reason": "backpressure"
+    }
+  ],
+  "privacy": {
+    "prompt_text": "excluded",
+    "generated_content": "excluded",
+    "complete_token_arrays": "excluded",
+    "kv_or_native_payload_contents": "excluded",
+    "credentials": "excluded",
+    "private_paths": "excluded",
+    "endpoint_urls": "excluded",
+    "real_machine_labels": "excluded"
+  },
+  "remaining_authorization_required": [
+    "run 4k split-channel PGX/Mac foreground streaming smoke",
+    "validate source-side overlap telemetry",
+    "keep 8k deferred until split-channel 4k pass"
+  ]
+}

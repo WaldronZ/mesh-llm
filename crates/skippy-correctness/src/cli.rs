@@ -19,6 +19,7 @@ pub enum CommandKind {
     StateHandoff(StateHandoffArgs),
     RouterValidation(RouterValidationArgs),
     KvPageHandoff(KvPageHandoffArgs),
+    KvStreamingHandoff(KvStreamingHandoffArgs),
 }
 
 #[derive(Args, Clone)]
@@ -339,6 +340,163 @@ pub struct KvPageHandoffCoordinatorArgs {
 #[value(rename_all = "kebab-case")]
 pub enum KvPageBootstrapStrategy {
     TrimReplayLastToken,
+}
+
+#[derive(Args)]
+pub struct KvStreamingHandoffArgs {
+    #[command(subcommand)]
+    pub role: KvStreamingHandoffRole,
+}
+
+#[derive(Subcommand)]
+pub enum KvStreamingHandoffRole {
+    Local(KvStreamingHandoffLocalArgs),
+    Source(KvStreamingHandoffSourceArgs),
+    Coordinator(KvStreamingHandoffCoordinatorArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum KvStreamingPipelineMode {
+    Serial,
+    Async,
+    SplitChannel,
+}
+
+#[derive(Args)]
+pub struct KvStreamingHandoffLocalArgs {
+    #[command(flatten)]
+    pub output: OutputArgs,
+    #[arg(long, value_enum, default_value = "serial")]
+    pub pipeline_mode: KvStreamingPipelineMode,
+    #[arg(long, default_value_t = 128)]
+    pub total_tokens: usize,
+    #[arg(long, default_value_t = 64)]
+    pub chunk_tokens: usize,
+    #[arg(long, default_value_t = 1)]
+    pub max_in_flight_chunks: usize,
+    #[arg(long, default_value_t = 1_048_576)]
+    pub max_in_flight_bytes: u64,
+    #[arg(long, default_value_t = 524_288)]
+    pub max_frame_bytes: u64,
+    #[arg(long, default_value_t = 2)]
+    pub max_queue_depth: usize,
+    #[arg(long, default_value_t = 4096)]
+    pub page_bytes_per_chunk: u64,
+}
+
+#[derive(Args)]
+pub struct KvStreamingHandoffSourceArgs {
+    #[command(flatten)]
+    pub output: OutputArgs,
+    #[arg(long, value_enum, default_value = "serial")]
+    pub pipeline_mode: KvStreamingPipelineMode,
+    #[arg(long, alias = "control-bind-addr", default_value = "127.0.0.1:19430")]
+    pub bind_addr: SocketAddr,
+    #[arg(long, default_value = "127.0.0.1:19431")]
+    pub page_bind_addr: SocketAddr,
+    #[arg(long)]
+    pub model: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "runtime-slice")]
+    pub stage_load_mode: StageLoadMode,
+    #[arg(long, default_value_t = 60)]
+    pub layer_end: u32,
+    #[arg(long, default_value_t = 8192)]
+    pub ctx_size: u32,
+    #[arg(long, default_value_t = 0)]
+    pub n_gpu_layers: i32,
+    #[arg(long)]
+    pub n_batch: Option<u32>,
+    #[arg(long)]
+    pub n_ubatch: Option<u32>,
+    #[arg(long = "flash-attn", value_enum, default_value = "auto")]
+    pub flash_attn: FlashAttentionArg,
+    #[arg(long, default_value = "source")]
+    pub session_id: String,
+    #[arg(
+        long,
+        default_value = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )]
+    pub artifact_sha256: String,
+    #[arg(
+        long,
+        default_value = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )]
+    pub tokenizer_hash: String,
+    #[arg(
+        long,
+        default_value = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )]
+    pub chat_template_hash: String,
+    #[arg(long, default_value_t = 2)]
+    pub max_queue_depth: usize,
+}
+
+#[derive(Args)]
+pub struct KvStreamingHandoffCoordinatorArgs {
+    #[command(flatten)]
+    pub output: OutputArgs,
+    #[arg(long)]
+    pub markdown_out: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "serial")]
+    pub pipeline_mode: KvStreamingPipelineMode,
+    #[arg(long, alias = "control-addr", default_value = "127.0.0.1:19430")]
+    pub source_addr: SocketAddr,
+    #[arg(long, default_value = "127.0.0.1:19431")]
+    pub page_addr: SocketAddr,
+    #[arg(long)]
+    pub model: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "runtime-slice")]
+    pub stage_load_mode: StageLoadMode,
+    #[arg(long, default_value_t = 60)]
+    pub layer_end: u32,
+    #[arg(long, default_value_t = 8192)]
+    pub ctx_size: u32,
+    #[arg(long, default_value_t = 0)]
+    pub n_gpu_layers: i32,
+    #[arg(long)]
+    pub n_batch: Option<u32>,
+    #[arg(long)]
+    pub n_ubatch: Option<u32>,
+    #[arg(long = "flash-attn", value_enum, default_value = "auto")]
+    pub flash_attn: FlashAttentionArg,
+    #[arg(long, default_value = "source")]
+    pub session_id: String,
+    #[arg(
+        long,
+        default_value = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )]
+    pub artifact_sha256: String,
+    #[arg(
+        long,
+        default_value = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )]
+    pub tokenizer_hash: String,
+    #[arg(
+        long,
+        default_value = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )]
+    pub chat_template_hash: String,
+    #[arg(long, default_value = "synthetic-streaming-two-chunk")]
+    pub prompt_id: String,
+    #[arg(long, default_value_t = 128)]
+    pub total_tokens: usize,
+    #[arg(long, default_value_t = 64)]
+    pub chunk_tokens: usize,
+    #[arg(long, default_value_t = 16)]
+    pub max_tokens: usize,
+    #[arg(long, default_value_t = 42)]
+    pub seed: u64,
+    #[arg(long, value_enum, default_value = "trim-replay-last-token")]
+    pub bootstrap_strategy: KvPageBootstrapStrategy,
+    #[arg(long, default_value_t = 1)]
+    pub max_in_flight_chunks: usize,
+    #[arg(long, default_value_t = 1_073_741_824)]
+    pub max_in_flight_bytes: u64,
+    #[arg(long, default_value_t = 1_073_741_824)]
+    pub max_frame_bytes: u64,
+    #[arg(long, default_value_t = 2)]
+    pub max_queue_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
