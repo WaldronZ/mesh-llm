@@ -1,0 +1,57 @@
+{
+  "change": "pd-streaming-kv-page-subframing",
+  "date": "2026-05-27",
+  "segment": "short-subframing-foreground-smoke",
+  "result": "pass",
+  "scope": {
+    "production_serving_path": true,
+    "used_skippy_correctness_harness_as_pass": false,
+    "full_state_used_as_streaming_pass": false,
+    "four_k_smoke_run": false,
+    "eight_k_smoke_run": false
+  },
+  "request": {
+    "prompt_id": "pd-subframing-short-synthetic-2026-05-27",
+    "prompt_token_count": 25,
+    "requested_max_tokens": 32,
+    "stream": true,
+    "temperature": 0,
+    "reasoning_effort": "none"
+  },
+  "observations": {
+    "http_200": true,
+    "sse_done": true,
+    "assistant_content_observed": true,
+    "content_delta_count": 9,
+    "protocol": "pd-kv-stream/1",
+    "chunk_count": 1,
+    "segment_count": 2,
+    "segment_kinds": ["iswa/base", "iswa/swa"],
+    "max_frame_bytes": 67108864,
+    "total_page_bytes": 22528000,
+    "base_logical_bytes": 2048000,
+    "base_subframe_count": 1,
+    "swa_logical_bytes": 20480000,
+    "swa_subframe_count": 1,
+    "final_gate_pass": true,
+    "bootstrap_pass": true,
+    "logits_ready": true,
+    "decode_start_position": 25,
+    "decode_start_observed": true,
+    "source_listener_alive_after_request": true,
+    "no_frame_too_large": true,
+    "no_page_read_timeout": true,
+    "no_full_state_fallback": true,
+    "no_transparent_fallback": true
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "complete_token_array_recorded": false,
+    "kv_native_payload_recorded": false,
+    "private_path_recorded": false,
+    "endpoint_url_recorded": false,
+    "real_hostname_recorded": false,
+    "credentials_recorded": false
+  }
+}

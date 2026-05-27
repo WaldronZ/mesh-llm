@@ -29,6 +29,7 @@ const PD_STREAM_FRAME_MAX_HEADER_BYTES: usize = 64 * 1024;
 const SOURCE_EVENT_ATTR: &str = "pd.streaming_kv.source.event";
 const SOURCE_FAILURE_PHASE_ATTR: &str = "pd.streaming_kv.source.failure_phase";
 const SOURCE_FAILURE_REASON_ATTR: &str = "pd.streaming_kv.source.failure_reason";
+const SOURCE_STREAM_IO_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PdStreamingKvSourceOptions {
@@ -92,6 +93,7 @@ pub(crate) struct SourceControlEvent {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SourcePageFrameKind {
     Page,
+    PageSubframe,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -103,6 +105,12 @@ pub(crate) struct SourcePageFrame {
     pub(crate) chunk_index: usize,
     pub(crate) segment_index: usize,
     pub(crate) segment_count: usize,
+    pub(crate) subframe_index: usize,
+    pub(crate) subframe_count: usize,
+    pub(crate) byte_offset: u64,
+    pub(crate) subframe_payload_bytes: u64,
+    pub(crate) subframe_checksum_algorithm: String,
+    pub(crate) subframe_checksum: String,
     pub(crate) manifest: PdStreamingKvSegmentManifest,
 }
 
@@ -331,8 +339,8 @@ fn handle_prefill_chunk_request(
         ),
         options.max_frame_bytes,
     )
-    .map_err(|_| SourceFailure {
-        reason: "control_write",
+    .map_err(|error| SourceFailure {
+        reason: source_io_error_reason(&error, "control_write_timeout", "control_write"),
     })?;
 
     source_chunk_lifecycle("source_prefill_chunk_start", request)
@@ -376,8 +384,8 @@ fn handle_prefill_chunk_request(
         ),
         options.max_frame_bytes,
     )
-    .map_err(|_| SourceFailure {
-        reason: "control_write",
+    .map_err(|error| SourceFailure {
+        reason: source_io_error_reason(&error, "control_write_timeout", "control_write"),
     })?;
     write_control_event(
         control_stream,
@@ -391,8 +399,8 @@ fn handle_prefill_chunk_request(
         ),
         options.max_frame_bytes,
     )
-    .map_err(|_| SourceFailure {
-        reason: "control_write",
+    .map_err(|error| SourceFailure {
+        reason: source_io_error_reason(&error, "control_write_timeout", "control_write"),
     })?;
 
     source_chunk_lifecycle("source_export_kv_page_segments_start", request).emit();
@@ -441,17 +449,12 @@ fn handle_prefill_chunk_request(
         ),
         options.max_frame_bytes,
     )
-    .map_err(|_| SourceFailure {
-        reason: "control_write",
+    .map_err(|error| SourceFailure {
+        reason: source_io_error_reason(&error, "control_write_timeout", "control_write"),
     })?;
 
     let mut manifests = Vec::with_capacity(pages.len());
     for (segment_index, page) in pages.iter().enumerate() {
-        if page.payload.len() as u64 > options.max_frame_bytes {
-            return Err(SourceFailure {
-                reason: "frame_too_large",
-            });
-        }
         let manifest = pd_streaming_kv_manifest_from_runtime_page(
             page,
             &request.identity,
@@ -459,43 +462,74 @@ fn handle_prefill_chunk_request(
             request.total_chunks,
         )
         .map_err(|_| SourceFailure { reason: "manifest" })?;
-        manifests.push(manifest);
-        let frame = SourcePageFrame {
-            protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
-            kind: SourcePageFrameKind::Page,
-            request_id: request.request_id,
-            session_id: request.session_id.clone(),
-            chunk_index: request.chunk_index,
-            segment_index,
-            segment_count: pages.len(),
-            manifest: manifests.last().expect("manifest pushed").clone(),
-        };
-        validate_source_page_frame_payload(&frame, &request.identity, &page.payload).map_err(
-            |_| SourceFailure {
-                reason: "manifest_validation",
-            },
-        )?;
-        source_chunk_lifecycle("source_page_frame_write_start", request)
-            .field("segment_index", segment_index)
-            .field("segment_count", pages.len())
-            .field("cache_kind", frame.manifest.cache_kind.as_str())
-            .field("segment_kind", frame.manifest.segment_kind.as_str())
-            .field("payload_bytes", page.payload.len())
-            .field("checksum_present", true)
-            .field("checksum_valid", true)
-            .emit();
-        write_pd_stream_frame(page_stream, &frame, &page.payload, options.max_frame_bytes)
-            .map_err(|_| SourceFailure {
-                reason: "page_write",
+        manifests.push(manifest.clone());
+        let max_subframe_bytes =
+            max_subframe_payload_bytes(options.max_frame_bytes).map_err(|_| SourceFailure {
+                reason: "source_frame_too_large",
             })?;
-        source_chunk_lifecycle("source_page_frame_write_end", request)
-            .field("segment_index", segment_index)
-            .field("segment_count", pages.len())
-            .field("cache_kind", frame.manifest.cache_kind.as_str())
-            .field("segment_kind", frame.manifest.segment_kind.as_str())
-            .field("payload_bytes", page.payload.len())
-            .field("checksum_valid", true)
-            .emit();
+        let subframe_count = source_subframe_count(page.payload.len(), max_subframe_bytes)
+            .map_err(|_| SourceFailure {
+                reason: "source_frame_too_large",
+            })?;
+        for subframe_index in 0..subframe_count {
+            let start = subframe_index
+                .checked_mul(max_subframe_bytes)
+                .ok_or(SourceFailure {
+                    reason: "source_frame_too_large",
+                })?;
+            let end = start
+                .saturating_add(max_subframe_bytes)
+                .min(page.payload.len());
+            let subframe_payload = &page.payload[start..end];
+            let frame = source_page_subframe(
+                request,
+                &manifest,
+                segment_index,
+                pages.len(),
+                subframe_index,
+                subframe_count,
+                start as u64,
+                subframe_payload,
+            );
+            validate_source_page_subframe_payload(&frame, &request.identity, subframe_payload)
+                .map_err(|_| SourceFailure {
+                    reason: "manifest_validation",
+                })?;
+            source_chunk_lifecycle("source_subframe_write_start", request)
+                .field("segment_index", segment_index)
+                .field("segment_count", pages.len())
+                .field("subframe_index", subframe_index)
+                .field("subframe_count", subframe_count)
+                .field("byte_offset", start)
+                .field("cache_kind", frame.manifest.cache_kind.as_str())
+                .field("segment_kind", frame.manifest.segment_kind.as_str())
+                .field("payload_bytes", subframe_payload.len())
+                .field("logical_payload_bytes", page.payload.len())
+                .field("checksum_present", true)
+                .field("checksum_valid", true)
+                .emit();
+            write_pd_stream_frame(
+                page_stream,
+                &frame,
+                subframe_payload,
+                options.max_frame_bytes,
+            )
+            .map_err(|error| SourceFailure {
+                reason: source_page_write_error_reason(&error),
+            })?;
+            source_chunk_lifecycle("source_subframe_write_end", request)
+                .field("segment_index", segment_index)
+                .field("segment_count", pages.len())
+                .field("subframe_index", subframe_index)
+                .field("subframe_count", subframe_count)
+                .field("byte_offset", start)
+                .field("cache_kind", frame.manifest.cache_kind.as_str())
+                .field("segment_kind", frame.manifest.segment_kind.as_str())
+                .field("payload_bytes", subframe_payload.len())
+                .field("logical_payload_bytes", page.payload.len())
+                .field("checksum_valid", true)
+                .emit();
+        }
     }
     validate_source_chunk_manifests(&manifests, request).map_err(|_| SourceFailure {
         reason: "manifest_validation",
@@ -512,8 +546,8 @@ fn handle_prefill_chunk_request(
         ),
         options.max_frame_bytes,
     )
-    .map_err(|_| SourceFailure {
-        reason: "control_write",
+    .map_err(|error| SourceFailure {
+        reason: source_io_error_reason(&error, "control_write_timeout", "control_write"),
     })?;
     source_chunk_lifecycle("source_chunk_done", request)
         .field("segment_count", pages.len())
@@ -596,12 +630,130 @@ fn validate_source_page_frame(
     Ok(())
 }
 
-pub(crate) fn validate_source_page_frame_payload(
+fn max_subframe_payload_bytes(max_frame_bytes: u64) -> Result<usize> {
+    if max_frame_bytes == 0 {
+        bail!("max_frame_bytes");
+    }
+    Ok(usize::try_from(max_frame_bytes).unwrap_or(usize::MAX))
+}
+
+fn source_subframe_count(payload_len: usize, max_subframe_bytes: usize) -> Result<usize> {
+    if payload_len == 0 || max_subframe_bytes == 0 {
+        bail!("subframe_count");
+    }
+    Ok((payload_len - 1) / max_subframe_bytes + 1)
+}
+
+fn source_page_subframe(
+    request: &SourceControlRequest,
+    manifest: &PdStreamingKvSegmentManifest,
+    segment_index: usize,
+    segment_count: usize,
+    subframe_index: usize,
+    subframe_count: usize,
+    byte_offset: u64,
+    payload: &[u8],
+) -> SourcePageFrame {
+    SourcePageFrame {
+        protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
+        kind: SourcePageFrameKind::PageSubframe,
+        request_id: request.request_id,
+        session_id: request.session_id.clone(),
+        chunk_index: request.chunk_index,
+        segment_index,
+        segment_count,
+        subframe_index,
+        subframe_count,
+        byte_offset,
+        subframe_payload_bytes: payload.len() as u64,
+        subframe_checksum_algorithm: "sha256".to_string(),
+        subframe_checksum: pd_streaming_kv_payload_checksum(payload),
+        manifest: manifest.clone(),
+    }
+}
+
+fn single_page_frame_from_manifest(
+    request: &SourceControlRequest,
+    manifest: PdStreamingKvSegmentManifest,
+    segment_index: usize,
+    segment_count: usize,
+) -> SourcePageFrame {
+    SourcePageFrame {
+        protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
+        kind: SourcePageFrameKind::Page,
+        request_id: request.request_id,
+        session_id: request.session_id.clone(),
+        chunk_index: request.chunk_index,
+        segment_index,
+        segment_count,
+        subframe_index: 0,
+        subframe_count: 1,
+        byte_offset: 0,
+        subframe_payload_bytes: manifest.payload_bytes,
+        subframe_checksum_algorithm: "sha256".to_string(),
+        subframe_checksum: manifest.checksum.clone(),
+        manifest,
+    }
+}
+
+pub(crate) fn validate_source_page_subframe_payload(
     frame: &SourcePageFrame,
     identity: &PdStreamingKvManifestIdentity,
     payload: &[u8],
 ) -> Result<()> {
     validate_source_page_frame(frame, identity)?;
+    if frame.subframe_count == 0 || frame.subframe_index >= frame.subframe_count {
+        bail!("subframe_index");
+    }
+    if frame.subframe_payload_bytes == 0 || frame.subframe_payload_bytes != payload.len() as u64 {
+        bail!("subframe_payload_bytes");
+    }
+    if frame.subframe_checksum_algorithm != "sha256"
+        || frame.subframe_checksum.len() != 64
+        || !frame
+            .subframe_checksum
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("subframe_checksum");
+    }
+    if frame.subframe_checksum != pd_streaming_kv_payload_checksum(payload) {
+        bail!("subframe_checksum");
+    }
+    let subframe_end = frame
+        .byte_offset
+        .checked_add(frame.subframe_payload_bytes)
+        .ok_or_else(|| anyhow!("byte_offset"))?;
+    if frame.byte_offset >= frame.manifest.payload_bytes
+        || subframe_end > frame.manifest.payload_bytes
+    {
+        bail!("byte_offset");
+    }
+    if frame.kind == SourcePageFrameKind::Page
+        && (frame.subframe_index != 0
+            || frame.subframe_count != 1
+            || frame.byte_offset != 0
+            || frame.subframe_payload_bytes != frame.manifest.payload_bytes)
+    {
+        bail!("subframe_metadata");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn validate_source_page_frame_payload(
+    frame: &SourcePageFrame,
+    identity: &PdStreamingKvManifestIdentity,
+    payload: &[u8],
+) -> Result<()> {
+    validate_source_page_subframe_payload(frame, identity, payload)?;
+    if frame.subframe_index != 0
+        || frame.subframe_count != 1
+        || frame.byte_offset != 0
+        || frame.subframe_payload_bytes != frame.manifest.payload_bytes
+    {
+        bail!("payload_bytes");
+    }
     if frame.manifest.payload_bytes != payload.len() as u64 {
         bail!("payload_bytes");
     }
@@ -634,16 +786,7 @@ fn validate_source_chunk_manifests(
         {
             bail!("chunk_range");
         }
-        let frame = SourcePageFrame {
-            protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
-            kind: SourcePageFrameKind::Page,
-            request_id: request.request_id,
-            session_id: request.session_id.clone(),
-            chunk_index: request.chunk_index,
-            segment_index: 0,
-            segment_count: manifests.len(),
-            manifest: manifest.clone(),
-        };
+        let frame = single_page_frame_from_manifest(request, manifest.clone(), 0, manifests.len());
         validate_source_page_frame(&frame, &request.identity)?;
         if manifest.cache_kind != cache_kind {
             bail!("cache_kind");
@@ -798,7 +941,36 @@ fn accept_pd_stream(
 fn prepare_stream(stream: &TcpStream) -> Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_nodelay(true).ok();
+    stream.set_read_timeout(Some(SOURCE_STREAM_IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(SOURCE_STREAM_IO_TIMEOUT))?;
     Ok(())
+}
+
+fn source_io_error_reason(
+    error: &anyhow::Error,
+    timeout_reason: &'static str,
+    fallback: &'static str,
+) -> &'static str {
+    if error.chain().any(|cause| {
+        cause.downcast_ref::<io::Error>().is_some_and(|io_error| {
+            matches!(
+                io_error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            )
+        })
+    }) {
+        timeout_reason
+    } else {
+        fallback
+    }
+}
+
+fn source_page_write_error_reason(error: &anyhow::Error) -> &'static str {
+    if error.to_string().contains("frame_too_large") {
+        "source_frame_too_large"
+    } else {
+        source_io_error_reason(error, "page_write_timeout", "page_write")
+    }
 }
 
 fn read_source_control_request<R>(
@@ -967,6 +1139,17 @@ mod tests {
         }
     }
 
+    fn page_frame(manifest: PdStreamingKvSegmentManifest) -> SourcePageFrame {
+        single_page_frame_from_manifest(&request(), manifest, 0, 1)
+    }
+
+    fn manifest_for_payload(payload: &[u8]) -> PdStreamingKvSegmentManifest {
+        let mut manifest = manifest();
+        manifest.payload_bytes = payload.len() as u64;
+        manifest.checksum = pd_streaming_kv_payload_checksum(payload);
+        manifest
+    }
+
     #[test]
     fn source_wire_round_trips_chunk_request_without_json_tokens() {
         let tokens = [11, 22, 33, 44];
@@ -1017,6 +1200,21 @@ mod tests {
             read_source_control_request(&mut Cursor::new(bad_frame), 1024),
             SourceControlRead::BadFrame
         ));
+    }
+
+    #[test]
+    fn source_io_error_reason_labels_timeouts() {
+        let timeout = anyhow::Error::new(io::Error::new(io::ErrorKind::TimedOut, "timeout"));
+        let broken_pipe = anyhow::Error::new(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
+
+        assert_eq!(
+            source_io_error_reason(&timeout, "page_write_timeout", "page_write"),
+            "page_write_timeout"
+        );
+        assert_eq!(
+            source_io_error_reason(&broken_pipe, "page_write_timeout", "page_write"),
+            "page_write"
+        );
     }
 
     #[test]
@@ -1090,32 +1288,14 @@ mod tests {
     fn source_page_frame_rejects_full_state_manifest() {
         let mut manifest = manifest();
         manifest.frame_kind = PdStreamingKvFrameKind::FullState;
-        let frame = SourcePageFrame {
-            protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
-            kind: SourcePageFrameKind::Page,
-            request_id: 7,
-            session_id: "session-a".to_string(),
-            chunk_index: 0,
-            segment_index: 0,
-            segment_count: 1,
-            manifest,
-        };
+        let frame = page_frame(manifest);
         let error = validate_source_page_frame(&frame, &identity()).unwrap_err();
         assert_eq!(error.to_string(), "full_state_frame");
     }
 
     #[test]
     fn source_page_frame_rejects_identity_mismatch() {
-        let frame = SourcePageFrame {
-            protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
-            kind: SourcePageFrameKind::Page,
-            request_id: 7,
-            session_id: "session-a".to_string(),
-            chunk_index: 0,
-            segment_index: 0,
-            segment_count: 1,
-            manifest: manifest(),
-        };
+        let frame = page_frame(manifest());
         let mut identity = identity();
         identity.artifact_sha256 =
             "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string();
@@ -1127,35 +1307,63 @@ mod tests {
     fn source_page_frame_rejects_checksum_mismatch() {
         let mut manifest = manifest();
         manifest.checksum = "not-a-checksum".to_string();
-        let frame = SourcePageFrame {
-            protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
-            kind: SourcePageFrameKind::Page,
-            request_id: 7,
-            session_id: "session-a".to_string(),
-            chunk_index: 0,
-            segment_index: 0,
-            segment_count: 1,
-            manifest,
-        };
+        let frame = page_frame(manifest);
         let error = validate_source_page_frame(&frame, &identity()).unwrap_err();
         assert_eq!(error.to_string(), "checksum");
     }
 
     #[test]
     fn source_page_frame_rejects_payload_checksum_mismatch() {
-        let frame = SourcePageFrame {
-            protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
-            kind: SourcePageFrameKind::Page,
-            request_id: 7,
-            session_id: "session-a".to_string(),
-            chunk_index: 0,
-            segment_index: 0,
-            segment_count: 1,
-            manifest: manifest(),
-        };
+        let frame = page_frame(manifest());
         let error =
             validate_source_page_frame_payload(&frame, &identity(), &[9, 9, 9, 9]).unwrap_err();
-        assert_eq!(error.to_string(), "checksum");
+        assert_eq!(error.to_string(), "subframe_checksum");
+    }
+
+    #[test]
+    fn source_subframes_large_logical_segment_into_bounded_frames() {
+        let payload = (0_u8..10).collect::<Vec<_>>();
+        let manifest = manifest_for_payload(&payload);
+        let max_subframe_bytes = max_subframe_payload_bytes(4).unwrap();
+        let subframe_count = source_subframe_count(payload.len(), max_subframe_bytes).unwrap();
+        assert_eq!(subframe_count, 3);
+
+        let mut offsets = Vec::new();
+        for subframe_index in 0..subframe_count {
+            let start = subframe_index * max_subframe_bytes;
+            let end = start.saturating_add(max_subframe_bytes).min(payload.len());
+            let subframe_payload = &payload[start..end];
+            let frame = source_page_subframe(
+                &request(),
+                &manifest,
+                0,
+                1,
+                subframe_index,
+                subframe_count,
+                start as u64,
+                subframe_payload,
+            );
+            validate_source_page_subframe_payload(&frame, &identity(), subframe_payload).unwrap();
+            assert!(subframe_payload.len() <= 4);
+            assert_eq!(frame.manifest.payload_bytes, payload.len() as u64);
+            assert_eq!(
+                frame.manifest.checksum,
+                pd_streaming_kv_payload_checksum(&payload)
+            );
+            offsets.push(frame.byte_offset);
+        }
+        assert_eq!(offsets, vec![0, 4, 8]);
+    }
+
+    #[test]
+    fn source_subframe_rejects_payload_checksum_mismatch() {
+        let payload = [1, 2, 3, 4, 5, 6];
+        let manifest = manifest_for_payload(&payload);
+        let mut frame = source_page_subframe(&request(), &manifest, 0, 1, 0, 2, 0, &payload[..4]);
+        frame.subframe_checksum = pd_streaming_kv_payload_checksum(&[9, 9, 9, 9]);
+        let error =
+            validate_source_page_subframe_payload(&frame, &identity(), &payload[..4]).unwrap_err();
+        assert_eq!(error.to_string(), "subframe_checksum");
     }
 
     #[test]

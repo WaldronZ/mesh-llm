@@ -1,0 +1,51 @@
+{
+  "change": "pd-streaming-kv-page-subframing",
+  "date": "2026-05-27",
+  "result": "inconclusive",
+  "recommendation": "ready_for_short_subframing_smoke",
+  "phase": "local_schema_parser_reassembler_tests",
+  "foreground_smoke_run": false,
+  "smoke_4k_run": false,
+  "smoke_8k_run": false,
+  "implemented": {
+    "subframe_schema": true,
+    "source_splitting": true,
+    "router_reassembly": true,
+    "logical_segment_import_after_reassembly": true,
+    "full_state_frame_rejected": true
+  },
+  "diagnostics": [
+    "source_subframe_write_start",
+    "source_subframe_write_end",
+    "router_subframe_received",
+    "router_segment_reassembly_start",
+    "router_segment_reassembly_end",
+    "router_segment_reassembly_error"
+  ],
+  "fail_closed_coverage": {
+    "missing_subframe": true,
+    "duplicate_subframe": true,
+    "out_of_order_subframe": true,
+    "byte_offset_gap": true,
+    "byte_offset_overlap": true,
+    "subframe_checksum_mismatch": true,
+    "logical_checksum_mismatch": true,
+    "logical_payload_bytes_mismatch": true,
+    "segment_identity_mismatch": true,
+    "full_state_frame": true
+  },
+  "not_yet_proven": [
+    "4k foreground smoke",
+    "8k foreground smoke"
+  ],
+  "privacy": {
+    "prompt_text": false,
+    "generated_content": false,
+    "complete_token_array": false,
+    "kv_native_payload": false,
+    "private_path": false,
+    "real_hostname": false,
+    "endpoint_url": false,
+    "credentials": false
+  }
+}

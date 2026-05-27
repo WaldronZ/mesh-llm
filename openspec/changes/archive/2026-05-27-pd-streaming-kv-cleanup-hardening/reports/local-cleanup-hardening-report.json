@@ -1,0 +1,21 @@
+{
+  "change": "pd-streaming-kv-cleanup-hardening",
+  "result": "inconclusive",
+  "recommendation": "ready_for_short_cleanup_smoke",
+  "foreground_smoke_run": false,
+  "hardening": {
+    "router_io_timeout": true,
+    "router_cleanup_socket_shutdown": true,
+    "source_stream_io_timeout": true,
+    "source_request_scoped_cleanup": true
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_payload_recorded": false,
+    "private_path_recorded": false,
+    "endpoint_url_recorded": false,
+    "credentials_recorded": false
+  }
+}

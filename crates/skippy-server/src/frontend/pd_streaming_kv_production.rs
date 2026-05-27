@@ -1,8 +1,11 @@
 use super::*;
 use std::{
     collections::BTreeMap,
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
-    sync::{Arc, Mutex},
+    io,
+    net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
+    sync::{mpsc, Arc, Mutex},
+    thread,
+    time::Duration,
 };
 
 use serde::Serialize;
@@ -11,7 +14,7 @@ use skippy_runtime::{RuntimeKvPage, RuntimeKvPageDesc};
 
 use crate::{
     binary_transport::pd_streaming_kv_source::{
-        encode_token_payload, read_pd_stream_frame, validate_source_page_frame_payload,
+        encode_token_payload, read_pd_stream_frame, validate_source_page_subframe_payload,
         write_pd_stream_frame, SourceControlEvent, SourceControlEventKind, SourceControlKind,
         SourceControlRequest, SourcePageFrame,
     },
@@ -21,6 +24,7 @@ use crate::{
 pub(crate) const PD_STREAMING_KV_PROTOCOL_VERSION: &str = "pd-kv-stream/1";
 pub(crate) const PD_STREAMING_KV_CHECKSUM_ALGORITHM: &str = "sha256";
 pub(crate) const PD_KV_STREAM_LIFECYCLE_PREFIX: &str = "pd.kv_stream.lifecycle";
+const PD_STREAMING_KV_CLEANUP_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PdKvStreamLifecycleDiagnostic {
@@ -546,6 +550,260 @@ pub(super) struct PdStreamingKvReceivedSegment {
     pub(super) payload: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
+struct PdStreamingKvSegmentReassembler {
+    request_id: u64,
+    session_id: String,
+    chunk: PdStreamingKvChunkRequest,
+    segment_index: usize,
+    segment_count: usize,
+    identity: PdStreamingKvManifestIdentity,
+    manifest: Option<PdStreamingKvSegmentManifest>,
+    expected_subframe_index: usize,
+    subframe_count: Option<usize>,
+    payload: Vec<u8>,
+}
+
+enum RouterControlWatchMessage {
+    Event(SourceControlEvent),
+    Error(PdStreamingKvLifecycleError),
+}
+
+struct RouterControlErrorWatch {
+    receiver: mpsc::Receiver<RouterControlWatchMessage>,
+    cached: Option<RouterControlWatchMessage>,
+}
+
+impl RouterControlErrorWatch {
+    fn start(
+        control_stream: &TcpStream,
+        page_stream: &TcpStream,
+        max_frame_bytes: u64,
+    ) -> Result<Self, PdStreamingKvLifecycleError> {
+        let mut control = control_stream
+            .try_clone()
+            .map_err(|_| PdStreamingKvLifecycleError {
+                phase: "control",
+                reason: "control_watch",
+            })?;
+        let page_cancel = page_stream
+            .try_clone()
+            .map_err(|_| PdStreamingKvLifecycleError {
+                phase: "page_stream",
+                reason: "control_watch",
+            })?;
+        control.set_read_timeout(None).ok();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let message = match read_pd_stream_frame::<_, SourceControlEvent>(
+                &mut control,
+                max_frame_bytes,
+            ) {
+                Ok((event, payload)) if payload.is_empty() => {
+                    let cancel_page = event.kind == SourceControlEventKind::Error;
+                    let message = RouterControlWatchMessage::Event(event);
+                    let _ = sender.send(message);
+                    if cancel_page {
+                        let _ = page_cancel.shutdown(Shutdown::Both);
+                    }
+                    return;
+                }
+                Ok((_event, _payload)) => {
+                    RouterControlWatchMessage::Error(PdStreamingKvLifecycleError {
+                        phase: "control",
+                        reason: "control_event_metadata",
+                    })
+                }
+                Err(error) => RouterControlWatchMessage::Error(PdStreamingKvLifecycleError {
+                    phase: "control",
+                    reason: streaming_io_error_reason(
+                        &error,
+                        "control_read_timeout",
+                        "control_read",
+                    ),
+                }),
+            };
+            let _ = sender.send(message);
+            let _ = page_cancel.shutdown(Shutdown::Both);
+        });
+        Ok(Self {
+            receiver,
+            cached: None,
+        })
+    }
+
+    fn try_recv(&mut self) -> Option<RouterControlWatchMessage> {
+        if self.cached.is_some() {
+            return self.cached.take();
+        }
+        match self.receiver.try_recv() {
+            Ok(message) => Some(message),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(RouterControlWatchMessage::Error(
+                PdStreamingKvLifecycleError {
+                    phase: "control",
+                    reason: "control_read",
+                },
+            )),
+        }
+    }
+
+    fn recv_after_page_error(&mut self, grace: Duration) -> Option<RouterControlWatchMessage> {
+        if self.cached.is_some() {
+            return self.cached.take();
+        }
+        match self.receiver.recv_timeout(grace) {
+            Ok(message) => Some(message),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Some(RouterControlWatchMessage::Error(
+                PdStreamingKvLifecycleError {
+                    phase: "control",
+                    reason: "control_read",
+                },
+            )),
+        }
+    }
+
+    fn wait_for_terminal_event(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<SourceControlEvent, PdStreamingKvLifecycleError> {
+        if let Some(message) = self.cached.take() {
+            return match message {
+                RouterControlWatchMessage::Event(event) => Ok(event),
+                RouterControlWatchMessage::Error(error) => Err(error),
+            };
+        }
+        match self.receiver.recv_timeout(timeout) {
+            Ok(RouterControlWatchMessage::Event(event)) => Ok(event),
+            Ok(RouterControlWatchMessage::Error(error)) => Err(error),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(PdStreamingKvLifecycleError {
+                phase: "control",
+                reason: "control_read_timeout",
+            }),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(PdStreamingKvLifecycleError {
+                phase: "control",
+                reason: "control_read",
+            }),
+        }
+    }
+}
+
+impl PdStreamingKvSegmentReassembler {
+    fn new(
+        request_id: u64,
+        session_id: String,
+        chunk: PdStreamingKvChunkRequest,
+        segment_index: usize,
+        segment_count: usize,
+        identity: PdStreamingKvManifestIdentity,
+    ) -> Self {
+        Self {
+            request_id,
+            session_id,
+            chunk,
+            segment_index,
+            segment_count,
+            identity,
+            manifest: None,
+            expected_subframe_index: 0,
+            subframe_count: None,
+            payload: Vec::new(),
+        }
+    }
+
+    fn push(
+        &mut self,
+        frame: SourcePageFrame,
+        subframe_payload: Vec<u8>,
+    ) -> Result<Option<PdStreamingKvReceivedSegment>, PdStreamingKvLifecycleError> {
+        if frame.request_id != self.request_id
+            || frame.session_id != self.session_id
+            || frame.chunk_index != self.chunk.chunk_index
+            || frame.segment_index != self.segment_index
+            || frame.segment_count != self.segment_count
+        {
+            return Err(reassembly_error("page_frame_metadata"));
+        }
+        validate_source_page_subframe_payload(&frame, &self.identity, &subframe_payload)
+            .map_err(|error| reassembly_error(subframe_validation_reason(&error)))?;
+        if frame.subframe_index != self.expected_subframe_index {
+            return Err(reassembly_error("subframe_order"));
+        }
+        if frame.byte_offset != self.payload.len() as u64 {
+            return Err(reassembly_error("byte_offset"));
+        }
+        match (&self.manifest, self.subframe_count) {
+            (None, None) => {
+                self.subframe_count = Some(frame.subframe_count);
+                self.manifest = Some(frame.manifest.clone());
+            }
+            (Some(manifest), Some(subframe_count)) => {
+                if frame.subframe_count != subframe_count || frame.manifest != *manifest {
+                    return Err(reassembly_error("segment_identity"));
+                }
+            }
+            _ => return Err(reassembly_error("segment_state")),
+        }
+        self.payload.extend_from_slice(&subframe_payload);
+        self.expected_subframe_index += 1;
+        let subframe_count = self
+            .subframe_count
+            .ok_or(reassembly_error("segment_state"))?;
+        if self.expected_subframe_index < subframe_count {
+            return Ok(None);
+        }
+        let manifest = self
+            .manifest
+            .clone()
+            .ok_or(reassembly_error("segment_state"))?;
+        if self.payload.len() as u64 != manifest.payload_bytes {
+            return Err(reassembly_error("logical_payload_bytes"));
+        }
+        if manifest.checksum != pd_streaming_kv_payload_checksum(&self.payload) {
+            return Err(reassembly_error("logical_checksum"));
+        }
+        Ok(Some(PdStreamingKvReceivedSegment {
+            manifest,
+            payload: std::mem::take(&mut self.payload),
+        }))
+    }
+
+    fn finish_incomplete(&self) -> Result<(), PdStreamingKvLifecycleError> {
+        if self
+            .subframe_count
+            .is_some_and(|count| self.expected_subframe_index == count)
+        {
+            Ok(())
+        } else {
+            Err(reassembly_error("missing_subframe"))
+        }
+    }
+}
+
+fn reassembly_error(reason: &'static str) -> PdStreamingKvLifecycleError {
+    PdStreamingKvLifecycleError {
+        phase: "reassembly",
+        reason,
+    }
+}
+
+fn subframe_validation_reason(error: &anyhow::Error) -> &'static str {
+    match error.to_string().as_str() {
+        "subframe_checksum" => "subframe_checksum",
+        "subframe_payload_bytes" => "subframe_payload_bytes",
+        "byte_offset" => "byte_offset",
+        "subframe_index" => "subframe_index",
+        "identity" => "segment_identity",
+        "full_state_frame" => "full_state_frame",
+        "payload_bytes" => "logical_payload_bytes",
+        "checksum" => "logical_checksum",
+        "cache_kind" => "cache_kind",
+        "segment_kind" => "segment_kind",
+        _ => "subframe_validation",
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PdStreamingKvLifecycleResult {
     pub(super) decode_start_position: usize,
@@ -566,6 +824,13 @@ impl PdStreamingKvLifecycleError {
     fn openai_error(self) -> OpenAiError {
         pd_streaming_kv_unavailable_error(self.reason)
     }
+}
+
+fn pd_streaming_kv_lifecycle_error(error: PdStreamingKvLifecycleError) -> OpenAiError {
+    PdKvStreamLifecycleDiagnostic::new("router", "router_request_error")
+        .failure(Some(error.phase), Some(error.reason))
+        .emit();
+    error.openai_error()
 }
 
 pub(super) trait PdStreamingKvProductionBackend {
@@ -646,7 +911,7 @@ impl<'a> RouterPdStreamingKvBackend<'a> {
         }
         self.diagnostic("router_connect_start").emit();
         let config = self.streaming_config()?;
-        let timeout = Duration::from_secs(self.config.startup_timeout_secs.max(1));
+        let timeout = streaming_kv_io_timeout(self.config);
         let control_addr = resolve_streaming_addr(&config.control_addr).map_err(|_| {
             PdStreamingKvLifecycleError {
                 phase: "connect",
@@ -664,14 +929,20 @@ impl<'a> RouterPdStreamingKvBackend<'a> {
                 reason: "control_connect",
             }
         })?;
-        control.set_nodelay(true).ok();
+        prepare_router_stream(&control, timeout).map_err(|_| PdStreamingKvLifecycleError {
+            phase: "connect",
+            reason: "control_stream",
+        })?;
         let page = TcpStream::connect_timeout(&page_addr, timeout).map_err(|_| {
             PdStreamingKvLifecycleError {
                 phase: "connect",
                 reason: "page_connect",
             }
         })?;
-        page.set_nodelay(true).ok();
+        prepare_router_stream(&page, timeout).map_err(|_| PdStreamingKvLifecycleError {
+            phase: "connect",
+            reason: "page_stream",
+        })?;
         self.control_stream = Some(control);
         self.page_stream = Some(page);
         self.diagnostic("router_connect_end").emit();
@@ -723,12 +994,36 @@ impl<'a> RouterPdStreamingKvBackend<'a> {
             })?;
         let (event, payload) =
             read_pd_stream_frame::<_, SourceControlEvent>(control_stream, max_frame_bytes)
-                .map_err(|_| PdStreamingKvLifecycleError {
+                .map_err(|error| PdStreamingKvLifecycleError {
                     phase: "control",
-                    reason: "control_read",
+                    reason: streaming_io_error_reason(
+                        &error,
+                        "control_read_timeout",
+                        "control_read",
+                    ),
                 })?;
-        if !payload.is_empty()
-            || event.protocol_version != PD_STREAMING_KV_PROTOCOL_VERSION
+        if !payload.is_empty() {
+            return Err(PdStreamingKvLifecycleError {
+                phase: "control",
+                reason: "control_event_metadata",
+            });
+        }
+        self.validate_control_event(chunk, &event, expected)?;
+        self.chunk_diagnostic("router_control_event_received", chunk)
+            .field("control_event", format!("{:?}", event.kind))
+            .field("segment_count", event.page_segments)
+            .field("page_bytes", event.page_bytes)
+            .emit();
+        Ok(event)
+    }
+
+    fn validate_control_event(
+        &self,
+        chunk: PdStreamingKvChunkRequest,
+        event: &SourceControlEvent,
+        expected: SourceControlEventKind,
+    ) -> Result<(), PdStreamingKvLifecycleError> {
+        if event.protocol_version != PD_STREAMING_KV_PROTOCOL_VERSION
             || event.request_id != self.request_id
             || event.session_id != self.session_id
             || event.chunk_index != chunk.chunk_index
@@ -741,6 +1036,18 @@ impl<'a> RouterPdStreamingKvBackend<'a> {
             });
         }
         if event.kind == SourceControlEventKind::Error {
+            self.chunk_diagnostic("router_control_error_received", chunk)
+                .failure(
+                    Some(sanitize_streaming_label(
+                        event.failure_phase.as_deref().unwrap_or("source"),
+                        "source",
+                    )),
+                    Some(sanitize_streaming_label(
+                        event.failure_reason.as_deref().unwrap_or("source_error"),
+                        "source_error",
+                    )),
+                )
+                .emit();
             return Err(PdStreamingKvLifecycleError {
                 phase: sanitize_streaming_label(
                     event.failure_phase.as_deref().unwrap_or("source"),
@@ -758,12 +1065,28 @@ impl<'a> RouterPdStreamingKvBackend<'a> {
                 reason: "control_event_order",
             });
         }
-        self.chunk_diagnostic("router_control_event_received", chunk)
-            .field("control_event", format!("{:?}", event.kind))
-            .field("segment_count", event.page_segments)
-            .field("page_bytes", event.page_bytes)
-            .emit();
-        Ok(event)
+        Ok(())
+    }
+
+    fn handle_watched_control_message(
+        &self,
+        chunk: PdStreamingKvChunkRequest,
+        message: RouterControlWatchMessage,
+    ) -> Result<Option<SourceControlEvent>, PdStreamingKvLifecycleError> {
+        match message {
+            RouterControlWatchMessage::Event(event) => {
+                if event.kind == SourceControlEventKind::Error {
+                    self.validate_control_event(chunk, &event, SourceControlEventKind::Error)?;
+                }
+                Ok(Some(event))
+            }
+            RouterControlWatchMessage::Error(error) => {
+                self.chunk_diagnostic("router_control_error_received", chunk)
+                    .failure(Some(error.phase), Some(error.reason))
+                    .emit();
+                Err(error)
+            }
+        }
     }
 }
 
@@ -808,9 +1131,9 @@ impl PdStreamingKvProductionBackend for RouterPdStreamingKvBackend<'_> {
                 reason: "not_connected",
             })?;
         write_pd_stream_frame(control_stream, &request, &payload, max_frame_bytes).map_err(
-            |_| PdStreamingKvLifecycleError {
+            |error| PdStreamingKvLifecycleError {
                 phase: "control",
-                reason: "control_write",
+                reason: streaming_io_error_reason(&error, "control_write_timeout", "control_write"),
             },
         )?;
         self.chunk_diagnostic("router_chunk_request_sent", chunk)
@@ -826,59 +1149,144 @@ impl PdStreamingKvProductionBackend for RouterPdStreamingKvBackend<'_> {
                 reason: "missing_segment",
             });
         }
-        let mut segments = Vec::with_capacity(exported.page_segments);
-        for segment_index in 0..exported.page_segments {
-            self.chunk_diagnostic("router_page_frame_receive_start", chunk)
-                .field("segment_index", segment_index)
-                .field("segment_count", exported.page_segments)
-                .emit();
-            let page_stream = self
-                .page_stream
-                .as_mut()
+        let mut control_watch = RouterControlErrorWatch::start(
+            self.control_stream
+                .as_ref()
+                .ok_or(PdStreamingKvLifecycleError {
+                    phase: "control",
+                    reason: "not_connected",
+                })?,
+            self.page_stream
+                .as_ref()
                 .ok_or(PdStreamingKvLifecycleError {
                     phase: "page_stream",
                     reason: "not_connected",
-                })?;
-            let (frame, payload) =
-                read_pd_stream_frame::<_, SourcePageFrame>(page_stream, max_frame_bytes).map_err(
-                    |_| PdStreamingKvLifecycleError {
-                        phase: "page_stream",
-                        reason: "page_read",
-                    },
-                )?;
-            if frame.request_id != self.request_id
-                || frame.session_id != self.session_id
-                || frame.chunk_index != chunk.chunk_index
-                || frame.segment_index != segment_index
-                || frame.segment_count != exported.page_segments
-            {
-                return Err(PdStreamingKvLifecycleError {
-                    phase: "page_stream",
-                    reason: "page_frame_metadata",
-                });
-            }
-            validate_source_page_frame_payload(&frame, &identity, &payload).map_err(|_| {
-                PdStreamingKvLifecycleError {
-                    phase: "manifest",
-                    reason: "manifest_validation",
-                }
-            })?;
-            self.chunk_diagnostic("router_page_frame_received", chunk)
+                })?,
+            max_frame_bytes,
+        )?;
+        let mut segments = Vec::with_capacity(exported.page_segments);
+        for segment_index in 0..exported.page_segments {
+            self.chunk_diagnostic("router_segment_reassembly_start", chunk)
                 .field("segment_index", segment_index)
                 .field("segment_count", exported.page_segments)
-                .field("cache_kind", frame.manifest.cache_kind.as_str())
-                .field("segment_kind", frame.manifest.segment_kind.as_str())
-                .field("payload_bytes", payload.len())
-                .field("checksum_present", true)
-                .field("checksum_valid", true)
-                .field("identity_valid", true)
                 .emit();
-            segments.push(PdStreamingKvReceivedSegment {
-                manifest: frame.manifest,
-                payload,
-            });
+            let mut reassembler = PdStreamingKvSegmentReassembler::new(
+                self.request_id,
+                self.session_id.clone(),
+                chunk,
+                segment_index,
+                exported.page_segments,
+                identity.clone(),
+            );
+            loop {
+                self.chunk_diagnostic("router_page_frame_receive_start", chunk)
+                    .field("segment_index", segment_index)
+                    .field("segment_count", exported.page_segments)
+                    .field(
+                        "expected_subframe_index",
+                        reassembler.expected_subframe_index,
+                    )
+                    .emit();
+                let page_stream = self
+                    .page_stream
+                    .as_mut()
+                    .ok_or(PdStreamingKvLifecycleError {
+                        phase: "page_stream",
+                        reason: "not_connected",
+                    })?;
+                let (frame, payload) = match read_pd_stream_frame::<_, SourcePageFrame>(
+                    page_stream,
+                    max_frame_bytes,
+                ) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        if let Some(message) =
+                            control_watch.recv_after_page_error(Duration::from_millis(100))
+                        {
+                            if let Some(event) =
+                                self.handle_watched_control_message(chunk, message)?
+                            {
+                                control_watch.cached =
+                                    Some(RouterControlWatchMessage::Event(event));
+                            }
+                        }
+                        return Err(PdStreamingKvLifecycleError {
+                            phase: "page_stream",
+                            reason: streaming_io_error_reason(
+                                &error,
+                                "page_read_timeout",
+                                "page_read",
+                            ),
+                        });
+                    }
+                };
+                if let Some(message) = control_watch.try_recv() {
+                    if let Some(event) = self.handle_watched_control_message(chunk, message)? {
+                        control_watch.cached = Some(RouterControlWatchMessage::Event(event));
+                    }
+                }
+                self.chunk_diagnostic("router_subframe_received", chunk)
+                    .field("segment_index", frame.segment_index)
+                    .field("segment_count", frame.segment_count)
+                    .field("subframe_index", frame.subframe_index)
+                    .field("subframe_count", frame.subframe_count)
+                    .field("byte_offset", frame.byte_offset)
+                    .field("cache_kind", frame.manifest.cache_kind.as_str())
+                    .field("segment_kind", frame.manifest.segment_kind.as_str())
+                    .field("payload_bytes", payload.len())
+                    .field("logical_payload_bytes", frame.manifest.payload_bytes)
+                    .field("checksum_present", true)
+                    .emit();
+                match reassembler.push(frame, payload) {
+                    Ok(Some(segment)) => {
+                        self.chunk_diagnostic("router_segment_reassembly_end", chunk)
+                            .field("segment_index", segment_index)
+                            .field("segment_count", exported.page_segments)
+                            .field("cache_kind", segment.manifest.cache_kind.as_str())
+                            .field("segment_kind", segment.manifest.segment_kind.as_str())
+                            .field("payload_bytes", segment.payload.len())
+                            .field("checksum_valid", true)
+                            .field("identity_valid", true)
+                            .emit();
+                        segments.push(segment);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.chunk_diagnostic("router_segment_reassembly_error", chunk)
+                            .field("segment_index", segment_index)
+                            .field("segment_count", exported.page_segments)
+                            .failure(Some(error.phase), Some(error.reason))
+                            .emit();
+                        return Err(error);
+                    }
+                }
+            }
+            if let Err(error) = reassembler.finish_incomplete() {
+                self.chunk_diagnostic("router_segment_reassembly_error", chunk)
+                    .field("segment_index", segment_index)
+                    .field("segment_count", exported.page_segments)
+                    .failure(Some(error.phase), Some(error.reason))
+                    .emit();
+                return Err(error);
+            }
         }
-        self.read_control_event(chunk, SourceControlEventKind::ChunkDone)?;
+        let chunk_done =
+            match control_watch.wait_for_terminal_event(streaming_kv_io_timeout(self.config)) {
+                Ok(event) => event,
+                Err(error) => {
+                    self.chunk_diagnostic("router_control_error_received", chunk)
+                        .failure(Some(error.phase), Some(error.reason))
+                        .emit();
+                    return Err(error);
+                }
+            };
+        self.validate_control_event(chunk, &chunk_done, SourceControlEventKind::ChunkDone)?;
+        self.chunk_diagnostic("router_control_event_received", chunk)
+            .field("control_event", format!("{:?}", chunk_done.kind))
+            .field("segment_count", chunk_done.page_segments)
+            .field("page_bytes", chunk_done.page_bytes)
+            .emit();
         Ok(segments)
     }
 
@@ -1024,6 +1432,7 @@ impl PdStreamingKvProductionBackend for RouterPdStreamingKvBackend<'_> {
     fn cleanup(&mut self) {
         self.diagnostic("router_cleanup").emit();
         if let Some(mut control_stream) = self.control_stream.take() {
+            let _ = control_stream.set_write_timeout(Some(PD_STREAMING_KV_CLEANUP_WRITE_TIMEOUT));
             if let Some(config) = self.config.streaming_kv.as_ref() {
                 let request = SourceControlRequest {
                     protocol_version: PD_STREAMING_KV_PROTOCOL_VERSION.to_string(),
@@ -1044,8 +1453,11 @@ impl PdStreamingKvProductionBackend for RouterPdStreamingKvBackend<'_> {
                     config.max_frame_bytes,
                 );
             }
+            let _ = control_stream.shutdown(Shutdown::Both);
         }
-        self.page_stream.take();
+        if let Some(page_stream) = self.page_stream.take() {
+            let _ = page_stream.shutdown(Shutdown::Both);
+        }
         if let Ok(mut runtime) = self.runtime.lock() {
             let _ = runtime.drop_session_timed(&self.session_id);
         }
@@ -1110,7 +1522,7 @@ fn run_pd_streaming_kv_production_lifecycle_inner(
         let token_ids = &prompt_token_ids[chunk.start_position..chunk.end_position];
         let segments = backend
             .export_chunk(request, token_ids)
-            .map_err(PdStreamingKvLifecycleError::openai_error)?;
+            .map_err(pd_streaming_kv_lifecycle_error)?;
         let segment_manifests = segments
             .iter()
             .map(|segment| segment.manifest.clone())
@@ -1135,7 +1547,7 @@ fn run_pd_streaming_kv_production_lifecycle_inner(
             let import_timer = PhaseTimer::start();
             backend
                 .import_segment(&segment.manifest, &segment.payload)
-                .map_err(PdStreamingKvLifecycleError::openai_error)?;
+                .map_err(pd_streaming_kv_lifecycle_error)?;
             import_ms += import_timer.elapsed_ms();
         }
         payload_bytes = payload_bytes.saturating_add(chunk_payload_bytes);
@@ -1162,7 +1574,7 @@ fn run_pd_streaming_kv_production_lifecycle_inner(
         .emit();
     backend
         .bootstrap(decode_start_position)
-        .map_err(PdStreamingKvLifecycleError::openai_error)?;
+        .map_err(pd_streaming_kv_lifecycle_error)?;
     let bootstrap_ms = bootstrap_timer.elapsed_ms();
     PdKvStreamLifecycleDiagnostic::new("router", "router_trim_replay_bootstrap_end")
         .field("decode_start_position", decode_start_position)
@@ -1263,6 +1675,36 @@ fn resolve_streaming_addr(endpoint: &str) -> Result<SocketAddr> {
         .ok_or_else(|| anyhow!("PD streaming KV endpoint did not resolve"))
 }
 
+fn streaming_kv_io_timeout(config: &PdRouterValidationConfig) -> Duration {
+    Duration::from_secs(config.startup_timeout_secs.max(1))
+}
+
+fn prepare_router_stream(stream: &TcpStream, timeout: Duration) -> io::Result<()> {
+    stream.set_nodelay(true).ok();
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    Ok(())
+}
+
+fn streaming_io_error_reason(
+    error: &anyhow::Error,
+    timeout_reason: &'static str,
+    fallback: &'static str,
+) -> &'static str {
+    if error.chain().any(|cause| {
+        cause.downcast_ref::<io::Error>().is_some_and(|io_error| {
+            matches!(
+                io_error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            )
+        })
+    }) {
+        timeout_reason
+    } else {
+        fallback
+    }
+}
+
 fn runtime_desc_from_manifest(segment: &PdStreamingKvSegmentManifest) -> Result<RuntimeKvPageDesc> {
     let desc = segment
         .native_desc
@@ -1312,10 +1754,29 @@ fn sanitize_streaming_label(value: &str, fallback: &'static str) -> &'static str
         "payload_bytes" => "payload_bytes",
         "capacity" => "capacity",
         "frame_too_large" => "frame_too_large",
+        "source_frame_too_large" => "source_frame_too_large",
         "checksum" => "checksum",
         "manifest_validation" => "manifest_validation",
+        "reassembly" => "reassembly",
+        "subframe_validation" => "subframe_validation",
+        "subframe_checksum" => "subframe_checksum",
+        "subframe_payload_bytes" => "subframe_payload_bytes",
+        "subframe_order" => "subframe_order",
+        "subframe_index" => "subframe_index",
+        "byte_offset" => "byte_offset",
+        "logical_payload_bytes" => "logical_payload_bytes",
+        "logical_checksum" => "logical_checksum",
+        "segment_identity" => "segment_identity",
+        "missing_subframe" => "missing_subframe",
         "page_write" => "page_write",
+        "control_read" => "control_read",
+        "control_read_timeout" => "control_read_timeout",
+        "control_write_timeout" => "control_write_timeout",
+        "page_read" => "page_read",
+        "page_read_timeout" => "page_read_timeout",
+        "page_write_timeout" => "page_write_timeout",
         "source_error" => "source_error",
+        "source_stream_error" => "source_stream_error",
         _ => fallback,
     }
 }
@@ -1323,6 +1784,8 @@ fn sanitize_streaming_label(value: &str, fallback: &'static str) -> &'static str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binary_transport::pd_streaming_kv_source::SourcePageFrameKind;
+    use std::net::TcpListener;
 
     const ARTIFACT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const TOKENIZER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -1387,6 +1850,91 @@ mod tests {
         }
     }
 
+    fn manifest_for_payload(
+        payload: &[u8],
+        segment_kind: &'static str,
+    ) -> PdStreamingKvSegmentManifest {
+        let mut manifest = segment(0, 0, 64, segment_kind);
+        manifest.payload_bytes = payload.len() as u64;
+        manifest.checksum = pd_streaming_kv_payload_checksum(payload);
+        manifest
+    }
+
+    fn subframe(
+        manifest: PdStreamingKvSegmentManifest,
+        subframe_index: usize,
+        subframe_count: usize,
+        byte_offset: u64,
+        payload: &[u8],
+    ) -> SourcePageFrame {
+        SourcePageFrame {
+            protocol_version: s(PD_STREAMING_KV_PROTOCOL_VERSION),
+            kind: SourcePageFrameKind::PageSubframe,
+            request_id: 7,
+            session_id: s("session-a"),
+            chunk_index: manifest.chunk_index,
+            segment_index: 0,
+            segment_count: 2,
+            subframe_index,
+            subframe_count,
+            byte_offset,
+            subframe_payload_bytes: payload.len() as u64,
+            subframe_checksum_algorithm: s(PD_STREAMING_KV_CHECKSUM_ALGORITHM),
+            subframe_checksum: pd_streaming_kv_payload_checksum(payload),
+            manifest,
+        }
+    }
+
+    fn control_event(
+        kind: SourceControlEventKind,
+        failure_phase: Option<&'static str>,
+        failure_reason: Option<&'static str>,
+    ) -> SourceControlEvent {
+        SourceControlEvent {
+            protocol_version: s(PD_STREAMING_KV_PROTOCOL_VERSION),
+            kind,
+            request_id: 7,
+            session_id: s("session-a"),
+            chunk_index: 0,
+            token_start: 0,
+            token_end: 64,
+            page_segments: 2,
+            page_bytes: 1024,
+            failure_phase: failure_phase.map(s),
+            failure_reason: failure_reason.map(s),
+        }
+    }
+
+    fn tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        server
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        (client, server)
+    }
+
+    fn reassembler() -> PdStreamingKvSegmentReassembler {
+        PdStreamingKvSegmentReassembler::new(
+            7,
+            s("session-a"),
+            PdStreamingKvChunkRequest {
+                chunk_index: 0,
+                total_chunks: 2,
+                token_start: 0,
+                token_end: 64,
+            },
+            0,
+            2,
+            identity(),
+        )
+    }
+
     fn config() -> PdRouterValidationConfig {
         PdRouterValidationConfig {
             mode: PdServingMode::Mvp,
@@ -1417,6 +1965,7 @@ mod tests {
 
     #[derive(Default)]
     struct MockStreamingBackend {
+        export_error_phase: Option<&'static str>,
         export_error: Option<&'static str>,
         corrupt_checksum: bool,
         full_state_frame: bool,
@@ -1454,7 +2003,7 @@ mod tests {
             self.exports.push(chunk);
             if let Some(reason) = self.export_error {
                 return Err(PdStreamingKvLifecycleError {
-                    phase: "export",
+                    phase: self.export_error_phase.unwrap_or("export"),
                     reason,
                 });
             }
@@ -1649,6 +2198,333 @@ mod tests {
     }
 
     #[test]
+    fn streaming_kv_reassembler_accepts_valid_multi_subframe_segment() {
+        let payload = b"abcdefghij".to_vec();
+        let manifest = manifest_for_payload(&payload, "base");
+        let mut reassembler = reassembler();
+
+        assert!(reassembler
+            .push(
+                subframe(manifest.clone(), 0, 3, 0, &payload[..4]),
+                payload[..4].to_vec()
+            )
+            .unwrap()
+            .is_none());
+        assert!(reassembler
+            .push(
+                subframe(manifest.clone(), 1, 3, 4, &payload[4..8]),
+                payload[4..8].to_vec()
+            )
+            .unwrap()
+            .is_none());
+        let segment = reassembler
+            .push(
+                subframe(manifest, 2, 3, 8, &payload[8..]),
+                payload[8..].to_vec(),
+            )
+            .unwrap()
+            .expect("segment complete");
+
+        assert_eq!(segment.payload, payload);
+        assert_eq!(segment.manifest.segment_kind, "base");
+    }
+
+    #[test]
+    fn streaming_kv_control_watch_reports_source_error_while_waiting_first_page_frame() {
+        let (control_router, mut control_source) = tcp_pair();
+        let (mut page_router, _page_source) = tcp_pair();
+        let mut watch =
+            RouterControlErrorWatch::start(&control_router, &page_router, 1024).unwrap();
+
+        write_pd_stream_frame(
+            &mut control_source,
+            &control_event(
+                SourceControlEventKind::Error,
+                Some("source"),
+                Some("source_frame_too_large"),
+            ),
+            &[],
+            1024,
+        )
+        .unwrap();
+
+        let page_error =
+            read_pd_stream_frame::<_, SourcePageFrame>(&mut page_router, 1024).unwrap_err();
+        let message = watch
+            .recv_after_page_error(Duration::from_secs(1))
+            .expect("control error should be observed before page timeout fallback");
+
+        assert_ne!(
+            streaming_io_error_reason(&page_error, "page_read_timeout", "page_read"),
+            "page_read_timeout"
+        );
+        match message {
+            RouterControlWatchMessage::Event(event) => {
+                assert_eq!(event.kind, SourceControlEventKind::Error);
+                assert_eq!(
+                    event.failure_reason.as_deref(),
+                    Some("source_frame_too_large")
+                );
+            }
+            RouterControlWatchMessage::Error(error) => panic!("unexpected watch error: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_kv_control_watch_reports_source_error_while_waiting_second_subframe() {
+        let (control_router, mut control_source) = tcp_pair();
+        let (mut page_router, mut page_source) = tcp_pair();
+        let mut watch =
+            RouterControlErrorWatch::start(&control_router, &page_router, 1024).unwrap();
+        let payload = b"abcdefghij".to_vec();
+        let manifest = manifest_for_payload(&payload, "base");
+        let first = subframe(manifest.clone(), 0, 2, 0, &payload[..4]);
+
+        write_pd_stream_frame(&mut page_source, &first, &payload[..4], 1024).unwrap();
+        let (frame, subframe_payload) =
+            read_pd_stream_frame::<_, SourcePageFrame>(&mut page_router, 1024).unwrap();
+        let mut reassembler = reassembler();
+        assert!(reassembler.push(frame, subframe_payload).unwrap().is_none());
+
+        write_pd_stream_frame(
+            &mut control_source,
+            &control_event(
+                SourceControlEventKind::Error,
+                Some("source"),
+                Some("source_stream_error"),
+            ),
+            &[],
+            1024,
+        )
+        .unwrap();
+        let _ = read_pd_stream_frame::<_, SourcePageFrame>(&mut page_router, 1024).unwrap_err();
+        let message = watch
+            .recv_after_page_error(Duration::from_secs(1))
+            .expect("source error should interrupt second subframe wait");
+
+        match message {
+            RouterControlWatchMessage::Event(event) => {
+                assert_eq!(event.kind, SourceControlEventKind::Error);
+                assert_eq!(event.failure_reason.as_deref(), Some("source_stream_error"));
+            }
+            RouterControlWatchMessage::Error(error) => panic!("unexpected watch error: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_kv_control_watch_leaves_page_success_path_unaffected() {
+        let (control_router, mut control_source) = tcp_pair();
+        let (mut page_router, mut page_source) = tcp_pair();
+        let mut watch =
+            RouterControlErrorWatch::start(&control_router, &page_router, 1024).unwrap();
+        let payload = b"abcd".to_vec();
+        let manifest = manifest_for_payload(&payload, "base");
+        let frame = subframe(manifest, 0, 1, 0, &payload);
+
+        write_pd_stream_frame(
+            &mut control_source,
+            &control_event(SourceControlEventKind::ChunkDone, None, None),
+            &[],
+            1024,
+        )
+        .unwrap();
+        write_pd_stream_frame(&mut page_source, &frame, &payload, 1024).unwrap();
+
+        let (received, received_payload) =
+            read_pd_stream_frame::<_, SourcePageFrame>(&mut page_router, 1024).unwrap();
+        assert_eq!(received.kind, SourcePageFrameKind::PageSubframe);
+        assert_eq!(received_payload, payload);
+
+        let event = watch
+            .wait_for_terminal_event(Duration::from_secs(1))
+            .expect("chunk_done should remain available");
+        assert_eq!(event.kind, SourceControlEventKind::ChunkDone);
+    }
+
+    #[test]
+    fn streaming_kv_control_watch_reports_control_eof_mid_page() {
+        let (control_router, control_source) = tcp_pair();
+        let (mut page_router, _page_source) = tcp_pair();
+        let mut watch =
+            RouterControlErrorWatch::start(&control_router, &page_router, 1024).unwrap();
+
+        drop(control_source);
+        let _ = read_pd_stream_frame::<_, SourcePageFrame>(&mut page_router, 1024).unwrap_err();
+        let message = watch
+            .recv_after_page_error(Duration::from_secs(1))
+            .expect("control eof should interrupt page wait");
+
+        match message {
+            RouterControlWatchMessage::Error(error) => {
+                assert_eq!(error.phase, "control");
+                assert_eq!(error.reason, "control_read");
+            }
+            RouterControlWatchMessage::Event(event) => panic!("unexpected event: {event:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_kv_reassembler_fails_closed_for_missing_subframe() {
+        let payload = b"abcdefghij".to_vec();
+        let manifest = manifest_for_payload(&payload, "base");
+        let mut reassembler = reassembler();
+
+        assert!(reassembler
+            .push(
+                subframe(manifest, 0, 3, 0, &payload[..4]),
+                payload[..4].to_vec()
+            )
+            .unwrap()
+            .is_none());
+        let error = reassembler.finish_incomplete().unwrap_err();
+        assert_eq!(error.reason, "missing_subframe");
+    }
+
+    #[test]
+    fn streaming_kv_reassembler_fails_closed_for_duplicate_or_out_of_order_subframe() {
+        let payload = b"abcdefghij".to_vec();
+        let manifest = manifest_for_payload(&payload, "base");
+        let mut duplicate = reassembler();
+        duplicate
+            .push(
+                subframe(manifest.clone(), 0, 3, 0, &payload[..4]),
+                payload[..4].to_vec(),
+            )
+            .unwrap();
+        let error = duplicate
+            .push(
+                subframe(manifest.clone(), 0, 3, 0, &payload[..4]),
+                payload[..4].to_vec(),
+            )
+            .unwrap_err();
+        assert_eq!(error.reason, "subframe_order");
+
+        let mut out_of_order = reassembler();
+        let error = out_of_order
+            .push(
+                subframe(manifest, 1, 3, 4, &payload[4..8]),
+                payload[4..8].to_vec(),
+            )
+            .unwrap_err();
+        assert_eq!(error.reason, "subframe_order");
+    }
+
+    #[test]
+    fn streaming_kv_reassembler_fails_closed_for_offset_gap_or_overlap() {
+        let payload = b"abcdefghij".to_vec();
+        let manifest = manifest_for_payload(&payload, "base");
+        let mut gap = reassembler();
+        gap.push(
+            subframe(manifest.clone(), 0, 3, 0, &payload[..4]),
+            payload[..4].to_vec(),
+        )
+        .unwrap();
+        let error = gap
+            .push(
+                subframe(manifest.clone(), 1, 3, 5, &payload[4..8]),
+                payload[4..8].to_vec(),
+            )
+            .unwrap_err();
+        assert_eq!(error.reason, "byte_offset");
+
+        let mut overlap = reassembler();
+        overlap
+            .push(
+                subframe(manifest.clone(), 0, 3, 0, &payload[..4]),
+                payload[..4].to_vec(),
+            )
+            .unwrap();
+        let error = overlap
+            .push(
+                subframe(manifest, 1, 3, 3, &payload[4..8]),
+                payload[4..8].to_vec(),
+            )
+            .unwrap_err();
+        assert_eq!(error.reason, "byte_offset");
+    }
+
+    #[test]
+    fn streaming_kv_reassembler_fails_closed_for_subframe_checksum_mismatch() {
+        let payload = b"abcdefghij".to_vec();
+        let manifest = manifest_for_payload(&payload, "base");
+        let mut frame = subframe(manifest, 0, 3, 0, &payload[..4]);
+        frame.subframe_checksum = pd_streaming_kv_payload_checksum(b"xxxx");
+        let error = reassembler()
+            .push(frame, payload[..4].to_vec())
+            .unwrap_err();
+        assert_eq!(error.reason, "subframe_checksum");
+    }
+
+    #[test]
+    fn streaming_kv_reassembler_fails_closed_for_logical_checksum_or_byte_mismatch() {
+        let payload = b"abcdefghij".to_vec();
+        let mut checksum_manifest = manifest_for_payload(&payload, "base");
+        checksum_manifest.checksum =
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string();
+        let mut checksum = reassembler();
+        checksum
+            .push(
+                subframe(checksum_manifest.clone(), 0, 2, 0, &payload[..5]),
+                payload[..5].to_vec(),
+            )
+            .unwrap();
+        let error = checksum
+            .push(
+                subframe(checksum_manifest, 1, 2, 5, &payload[5..]),
+                payload[5..].to_vec(),
+            )
+            .unwrap_err();
+        assert_eq!(error.reason, "logical_checksum");
+
+        let mut bytes_manifest = manifest_for_payload(&payload, "base");
+        bytes_manifest.payload_bytes += 1;
+        let mut bytes = reassembler();
+        bytes
+            .push(
+                subframe(bytes_manifest.clone(), 0, 2, 0, &payload[..5]),
+                payload[..5].to_vec(),
+            )
+            .unwrap();
+        let error = bytes
+            .push(
+                subframe(bytes_manifest, 1, 2, 5, &payload[5..]),
+                payload[5..].to_vec(),
+            )
+            .unwrap_err();
+        assert_eq!(error.reason, "logical_payload_bytes");
+    }
+
+    #[test]
+    fn streaming_kv_reassembler_fails_closed_for_identity_or_full_state_frame() {
+        let payload = b"abcdefghij".to_vec();
+        let mut identity_manifest = manifest_for_payload(&payload, "base");
+        identity_manifest.artifact_sha256 =
+            s("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let error = reassembler()
+            .push(
+                subframe(identity_manifest, 0, 1, 0, &payload),
+                payload.clone(),
+            )
+            .unwrap_err();
+        assert_eq!(error.reason, "segment_identity");
+
+        let mut full_state_manifest = manifest_for_payload(&payload, "base");
+        full_state_manifest.frame_kind = PdStreamingKvFrameKind::FullState;
+        let error = reassembler()
+            .push(subframe(full_state_manifest, 0, 1, 0, &payload), payload)
+            .unwrap_err();
+        assert_eq!(error.reason, "full_state_frame");
+    }
+
+    #[test]
+    fn streaming_kv_source_frame_too_large_control_error_is_bounded() {
+        assert_eq!(
+            sanitize_streaming_label("source_frame_too_large", "source_error"),
+            "source_frame_too_large"
+        );
+    }
+
+    #[test]
     fn streaming_kv_lifecycle_happy_path_reaches_decode_gate() {
         let config = config();
         let prompt_tokens = (0..128).collect::<Vec<_>>();
@@ -1708,6 +2584,155 @@ mod tests {
         assert!(error.body().error.message.contains("source_error"));
         assert!(emitted.is_empty());
         assert!(backend.cleanup_called);
+    }
+
+    #[test]
+    fn streaming_kv_lifecycle_page_stream_timeout_cleans_up_and_next_request_can_run() {
+        let config = config();
+        let prompt_tokens = (0..128).collect::<Vec<_>>();
+        let mut timed_out_backend = MockStreamingBackend {
+            export_error_phase: Some("page_stream"),
+            export_error: Some("page_read_timeout"),
+            ..Default::default()
+        };
+        let mut emitted = Vec::new();
+
+        let error = run_pd_streaming_kv_production_lifecycle(
+            &config,
+            &prompt_tokens,
+            2,
+            &mut timed_out_backend,
+            |token| {
+                emitted.push(token);
+                Ok(PdRouterValidationTokenControl {
+                    control: TokenControl::Continue,
+                    emitted_content_delta: true,
+                })
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(error.body().error.message.contains("page_read_timeout"));
+        assert!(emitted.is_empty());
+        assert!(timed_out_backend.cleanup_called);
+
+        let mut next_backend = MockStreamingBackend::default();
+        let result = run_pd_streaming_kv_production_lifecycle(
+            &config,
+            &prompt_tokens,
+            1,
+            &mut next_backend,
+            |_| {
+                Ok(PdRouterValidationTokenControl {
+                    control: TokenControl::Stop,
+                    emitted_content_delta: true,
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.decode_start_position, 128);
+        assert_eq!(result.decoded_tokens, 1);
+        assert!(next_backend.cleanup_called);
+    }
+
+    #[test]
+    fn streaming_kv_lifecycle_source_control_error_releases_next_request() {
+        let config = config();
+        let prompt_tokens = (0..128).collect::<Vec<_>>();
+        let mut source_error_backend = MockStreamingBackend {
+            export_error_phase: Some("source"),
+            export_error: Some("source_frame_too_large"),
+            ..Default::default()
+        };
+
+        let error = run_pd_streaming_kv_production_lifecycle(
+            &config,
+            &prompt_tokens,
+            2,
+            &mut source_error_backend,
+            |_| {
+                Ok(PdRouterValidationTokenControl {
+                    control: TokenControl::Continue,
+                    emitted_content_delta: true,
+                })
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(error
+            .body()
+            .error
+            .message
+            .contains("source_frame_too_large"));
+        assert!(source_error_backend.cleanup_called);
+
+        let mut next_backend = MockStreamingBackend::default();
+        let result = run_pd_streaming_kv_production_lifecycle(
+            &config,
+            &prompt_tokens,
+            1,
+            &mut next_backend,
+            |_| {
+                Ok(PdRouterValidationTokenControl {
+                    control: TokenControl::Stop,
+                    emitted_content_delta: true,
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.decode_start_position, 128);
+        assert!(next_backend.cleanup_called);
+    }
+
+    #[test]
+    fn streaming_kv_lifecycle_control_eof_cleans_up_before_content() {
+        let config = config();
+        let prompt_tokens = (0..128).collect::<Vec<_>>();
+        let mut backend = MockStreamingBackend {
+            export_error_phase: Some("control"),
+            export_error: Some("control_read"),
+            ..Default::default()
+        };
+        let mut emitted = Vec::new();
+
+        let error = run_pd_streaming_kv_production_lifecycle(
+            &config,
+            &prompt_tokens,
+            2,
+            &mut backend,
+            |token| {
+                emitted.push(token);
+                Ok(PdRouterValidationTokenControl {
+                    control: TokenControl::Continue,
+                    emitted_content_delta: true,
+                })
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(error.body().error.message.contains("control_read"));
+        assert!(emitted.is_empty());
+        assert!(backend.cleanup_called);
+    }
+
+    #[test]
+    fn streaming_kv_io_error_reason_labels_timeouts() {
+        let timeout = anyhow::Error::new(io::Error::new(io::ErrorKind::TimedOut, "timeout"));
+        let eof = anyhow::Error::new(io::Error::new(io::ErrorKind::UnexpectedEof, "eof"));
+
+        assert_eq!(
+            streaming_io_error_reason(&timeout, "page_read_timeout", "page_read"),
+            "page_read_timeout"
+        );
+        assert_eq!(
+            streaming_io_error_reason(&eof, "page_read_timeout", "page_read"),
+            "page_read"
+        );
     }
 
     #[test]

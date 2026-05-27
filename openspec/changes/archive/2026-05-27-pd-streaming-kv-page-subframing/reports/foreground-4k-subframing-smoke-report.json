@@ -1,0 +1,168 @@
+{
+  "change": "pd-streaming-kv-page-subframing",
+  "report": "foreground-4k-subframing-smoke",
+  "date": "2026-05-27",
+  "result": "pass",
+  "scope": "4k-class production pd-kv-stream/1 foreground smoke with page subframing",
+  "not_run": {
+    "eight_k": true,
+    "skippy_correctness_harness": true
+  },
+  "request": {
+    "prompt_id": "pd-subframing-4k-synthetic-2026-05-27",
+    "target_prompt_token_class": "4k",
+    "observed_prompt_token_count": 4063,
+    "chunk_tokens": 1024,
+    "max_tokens": 16,
+    "temperature": 0,
+    "seed": 42,
+    "stream": true,
+    "http_status": 200,
+    "sse_done": true,
+    "assistant_content_nonempty": true,
+    "content_delta_count": 16,
+    "elapsed_s": 94.524
+  },
+  "capacity": {
+    "max_frame_bytes": 67108864,
+    "max_in_flight_bytes": 1073741824,
+    "max_queue_depth": 4,
+    "in_flight_reason": "covers one full 1024-token iswa/swa logical segment reassembly without raising the single subframe cap"
+  },
+  "page_stream": {
+    "protocol": "pd-kv-stream/1",
+    "chunk_count": 4,
+    "segment_count": 8,
+    "segment_kinds": {
+      "iswa/base": 4,
+      "iswa/swa": 4
+    },
+    "total_page_bytes": 3661250560,
+    "bytes_per_token": 901120,
+    "max_subframe_payload_bytes": 67108864,
+    "all_subframes_within_cap": true,
+    "frame_too_large_observed": false,
+    "page_read_timeout_observed": false
+  },
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "token_start": 0,
+      "token_end": 1024,
+      "token_count": 1024,
+      "page_bytes": 922746880,
+      "segments": [
+        {
+          "kind": "iswa/base",
+          "logical_payload_bytes": 83886080,
+          "subframe_count": 2
+        },
+        {
+          "kind": "iswa/swa",
+          "logical_payload_bytes": 838860800,
+          "subframe_count": 13
+        }
+      ]
+    },
+    {
+      "chunk_index": 1,
+      "token_start": 1024,
+      "token_end": 2048,
+      "token_count": 1024,
+      "page_bytes": 922746880,
+      "segments": [
+        {
+          "kind": "iswa/base",
+          "logical_payload_bytes": 83886080,
+          "subframe_count": 2
+        },
+        {
+          "kind": "iswa/swa",
+          "logical_payload_bytes": 838860800,
+          "subframe_count": 13
+        }
+      ]
+    },
+    {
+      "chunk_index": 2,
+      "token_start": 2048,
+      "token_end": 3072,
+      "token_count": 1024,
+      "page_bytes": 922746880,
+      "segments": [
+        {
+          "kind": "iswa/base",
+          "logical_payload_bytes": 83886080,
+          "subframe_count": 2
+        },
+        {
+          "kind": "iswa/swa",
+          "logical_payload_bytes": 838860800,
+          "subframe_count": 13
+        }
+      ]
+    },
+    {
+      "chunk_index": 3,
+      "token_start": 3072,
+      "token_end": 4063,
+      "token_count": 991,
+      "page_bytes": 893009920,
+      "segments": [
+        {
+          "kind": "iswa/base",
+          "logical_payload_bytes": 81182720,
+          "subframe_count": 2
+        },
+        {
+          "kind": "iswa/swa",
+          "logical_payload_bytes": 811827200,
+          "subframe_count": 13
+        }
+      ]
+    }
+  ],
+  "lifecycle_evidence": {
+    "source_chunk_received": true,
+    "source_prefill_observed": true,
+    "source_export_observed": true,
+    "source_subframe_write_observed": true,
+    "source_chunk_done_observed": true,
+    "router_subframe_received": true,
+    "router_segment_reassembled": true,
+    "router_import_kv_page_observed": true,
+    "final_contiguous_gate_pass": true,
+    "trim_replay_bootstrap_pass": true,
+    "logits_ready": true,
+    "decode_start_position": 4063,
+    "decode_start_observed": true,
+    "router_cleanup_observed": true,
+    "source_listener_alive_after_request": true,
+    "full_state_fallback_not_used": true,
+    "transparent_fallback_not_used": true
+  },
+  "timing": {
+    "request_elapsed_s": 94.524,
+    "bootstrap_ms": 113.398584,
+    "reassembly_timing_ms": "not_recorded",
+    "import_total_ms": "not_recorded"
+  },
+  "comparison": {
+    "previous_non_subframed_4k_total_page_bytes": 3690987520,
+    "previous_non_subframed_bytes_per_token": 901120,
+    "previous_workaround_max_frame_bytes": 1073741824,
+    "current_path_uses_64mib_frame_cap": true,
+    "note": "Observed token count was 4063 rather than exactly 4096, so total bytes are proportionally lower; bytes/token matches the previous 4k production run."
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_payload_recorded": false,
+    "private_path_recorded": false,
+    "real_hostname_recorded": false,
+    "endpoint_url_recorded": false,
+    "credentials_recorded": false
+  },
+  "recommendation": "ready_for_archive_review"
+}

@@ -1,0 +1,50 @@
+{
+  "change": "pd-streaming-kv-cleanup-hardening",
+  "result": "pass",
+  "scope": "short production cleanup smoke",
+  "foreground_smoke_run": true,
+  "benchmarks_run": {
+    "4k": false,
+    "8k": false
+  },
+  "stalled_request": {
+    "prompt_token_count": 156,
+    "http_status": 200,
+    "sse_done": true,
+    "elapsed_seconds": 61.547,
+    "assistant_delta_observed": false,
+    "failure_phase": "page_stream",
+    "failure_reason": "page_read_timeout",
+    "router_cleanup_observed": true,
+    "source_cleanup_observed": true,
+    "source_listener_continue_observed": true
+  },
+  "during_stall_request": {
+    "http_status": 429,
+    "retry_after": "1"
+  },
+  "after_cleanup_request": {
+    "http_status": 200,
+    "sse_done": true,
+    "assistant_delta_observed": true,
+    "elapsed_seconds": 1.372
+  },
+  "stale_generation_slot_released": true,
+  "permanent_429_observed": false,
+  "restarted_processes": {
+    "mac_router": true,
+    "pgx_source": false,
+    "adapter": false,
+    "ui": false
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_payload_recorded": false,
+    "private_path_recorded": false,
+    "endpoint_url_recorded": false,
+    "hostnames_recorded": false,
+    "credentials_recorded": false
+  }
+}

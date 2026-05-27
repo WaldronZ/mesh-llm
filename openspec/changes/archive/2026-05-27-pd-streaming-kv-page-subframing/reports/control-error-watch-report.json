@@ -1,0 +1,37 @@
+{
+  "date": "2026-05-27",
+  "change": "pd-streaming-kv-page-subframing",
+  "phase": "control_error_watch",
+  "result": "inconclusive",
+  "recommendation": "ready_for_4k_subframing_smoke",
+  "foreground_smoke_run": false,
+  "smoke_4k_run": false,
+  "smoke_8k_run": false,
+  "implemented": {
+    "router_concurrent_control_watch": true,
+    "source_error_interrupts_page_read": true,
+    "router_control_error_received_diagnostic": true,
+    "chunk_done_cached_for_success_path": true,
+    "control_eof_fail_closed": true,
+    "full_state_fallback_used": false
+  },
+  "tests": {
+    "source_error_waiting_first_page_frame": true,
+    "source_error_waiting_second_subframe": true,
+    "page_success_path_unaffected": true,
+    "control_eof_mid_page": true,
+    "source_frame_too_large_releases_next_request": true,
+    "page_timeout_without_control_error_still_page_read_timeout": true,
+    "full_state_frame_rejected": true
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "complete_token_array_recorded": false,
+    "kv_native_payload_recorded": false,
+    "private_path_recorded": false,
+    "real_hostname_recorded": false,
+    "endpoint_url_recorded": false,
+    "credentials_recorded": false
+  }
+}
