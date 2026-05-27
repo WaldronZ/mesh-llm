@@ -9,6 +9,7 @@ import { loadChatState, saveChatState, trimThreadMessages } from '@/features/cha
 import { ChatLayout } from '@/features/chat/layouts/ChatLayout'
 import { ChatPage, ChatPageContent } from '@/features/chat/pages/ChatPage'
 import { adaptModelsToSummary } from '@/features/network/api/models-adapter'
+import { useModelsQuery } from '@/features/network/api/use-models-query'
 import { DataModeProvider } from '@/lib/data-mode/DataModeContext'
 import { FeatureFlagProvider } from '@/lib/feature-flags'
 
@@ -568,6 +569,21 @@ describe('ChatPage', () => {
     expect(screen.queryByText('cold-model')).not.toBeInTheDocument()
   })
 
+  it('does not render fault when live models payload is partial', async () => {
+    vi.mocked(useModelsQuery).mockReturnValue({
+      data: { data: [{ id: 'openai-listed-model' }] },
+      isFetching: false,
+      isError: false,
+      refetch: vi.fn()
+    } as unknown as ReturnType<typeof useModelsQuery>)
+    vi.mocked(adaptModelsToSummary).mockReturnValue([])
+
+    renderChatPage({ mode: 'live' })
+
+    expect(await screen.findByRole('combobox', { name: 'Select model' })).toBeInTheDocument()
+    expect(vi.mocked(adaptModelsToSummary)).toHaveBeenCalledWith({ data: [{ id: 'openai-listed-model' }] })
+  })
+
   it('loads the default system prompt when no user override is stored', async () => {
     const user = userEvent.setup()
     localStorage.clear()
@@ -685,7 +701,7 @@ describe('ChatPage', () => {
     })
   })
 
-  it('keeps auto selected and sends auto with a single live model', async () => {
+  it('keeps auto selected but sends the sole warm live model', async () => {
     const user = userEvent.setup()
     vi.mocked(adaptModelsToSummary).mockReturnValue(CHAT_HARNESS.models.slice(0, 1))
 
@@ -697,7 +713,40 @@ describe('ChatPage', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => {
-      expect(chatMock.sendCalls[0]).toMatchObject({ content: 'Use the router', model: 'auto' })
+      expect(chatMock.sendCalls[0]).toMatchObject({
+        content: 'Use the router',
+        model: CHAT_HARNESS.models[0].name
+      })
+    })
+  })
+
+  it('keeps auto when no warm live model is selectable', async () => {
+    const user = userEvent.setup()
+    vi.mocked(adaptModelsToSummary).mockReturnValue([])
+
+    renderChatPage({ mode: 'live' })
+
+    expect(screen.getByRole('combobox', { name: 'Select model' })).toHaveTextContent('Auto (router picks best)')
+    expect(screen.getByLabelText('Prompt')).toHaveAttribute('placeholder', 'Waiting for a warm model...')
+
+    await user.type(screen.getByLabelText('Prompt'), 'Do not send')
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(chatMock.sendCalls).toEqual([])
+  })
+
+  it('keeps auto when multiple warm live models are selectable', async () => {
+    const user = userEvent.setup()
+    vi.mocked(adaptModelsToSummary).mockReturnValue(CHAT_HARNESS.models.slice(0, 2))
+
+    renderChatPage({ mode: 'live' })
+
+    expect(screen.getByRole('combobox', { name: 'Select model' })).toHaveTextContent('Auto (router picks best)')
+
+    await user.type(screen.getByLabelText('Prompt'), 'Use auto')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => {
+      expect(chatMock.sendCalls[0]).toMatchObject({ content: 'Use auto', model: 'auto' })
     })
   })
 

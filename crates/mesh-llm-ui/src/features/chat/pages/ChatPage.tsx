@@ -457,7 +457,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const modelsQuery = useModelsQuery({ enabled: mode === 'live' })
   const statusQuery = useStatusQuery({ enabled: liveMode })
   const liveStatus = statusQuery.data
-  const liveModels = modelsQuery.data ? adaptModelsToSummary(modelsQuery.data.mesh_models) : undefined
+  const liveModels = modelsQuery.data ? adaptModelsToSummary(modelsQuery.data) : undefined
   const resolvedModels = liveMode ? liveModels : data.models
   const displayModels = resolvedModels ?? data.models
   const selectableModels = useMemo(() => displayModels.filter(isChatSelectableModel), [displayModels])
@@ -479,6 +479,8 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const [model, setModel] = useState('')
   const modelExists = selectableModels.some((item) => item.name === model)
   const activeModelName = model === AUTO_MODEL_VALUE ? AUTO_MODEL_VALUE : modelExists ? model : AUTO_MODEL_VALUE
+  const requestModelName =
+    activeModelName === AUTO_MODEL_VALUE && selectableModels.length === 1 ? selectableModels[0].name : activeModelName
   const [queuedSubmissions, setQueuedSubmissions] = useState<QueuedSubmission[]>([])
   const [attachmentProcessingStatus, setAttachmentProcessingStatus] = useState<AttachmentProcessingStatus | null>(null)
   const [submittedAttachmentsByMessageId, setSubmittedAttachmentsByMessageId] = useState<
@@ -761,8 +763,8 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const switchToTestData = useCallback(() => setMode('harness'), [setMode])
 
   useEffect(() => {
-    setSessionModel(activeModelName)
-  }, [activeModelName, setSessionModel])
+    setSessionModel(requestModelName)
+  }, [requestModelName, setSessionModel])
 
   useEffect(() => {
     if (chatConversationId) focusComposer()
@@ -905,7 +907,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
         previousMessages: chat.messages,
         previousThreadMessages: uiMessagesToThreadMessages(chat.messages),
         conversationId: ensuredConversationId,
-        submittedModel: activeModelName
+        submittedModel: requestModelName
       }
       clearComposerDraft(ensuredConversationId)
       if (attachmentsSnapshot.length > 0) {
@@ -957,19 +959,19 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
           timestamp: new Date().toISOString(),
           conversationId: ensuredConversationId,
           errorMessage,
-          model: activeModelName,
+          model: requestModelName,
           includeUserRow: true
         })
       }
     },
     [
       activeConversationKey,
-      activeModelName,
       chat,
       chatConversationId,
       clearComposerDraft,
       clearStoppedConversation,
       ensureConversation,
+      requestModelName,
       setComposerDraft,
       updateThread
     ]
@@ -1049,9 +1051,9 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
     clearStoppedConversation(ensuredConversationId)
     setFailedSubmission(null)
     handledChatErrorRef.current = null
-    pendingRetryRef.current = { conversationId: ensuredConversationId, model: activeModelName }
+    pendingRetryRef.current = { conversationId: ensuredConversationId, model: requestModelName }
     await chat.reload()
-  }, [activeModelName, canRetry, chat, clearStoppedConversation, ensureConversation])
+  }, [canRetry, chat, clearStoppedConversation, ensureConversation, requestModelName])
 
   const stopStreamingResponse = useCallback(() => {
     const latestLiveMessage = liveMessagesWithModels.at(-1)

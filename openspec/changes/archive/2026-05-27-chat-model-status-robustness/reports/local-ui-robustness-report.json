@@ -1,0 +1,30 @@
+{
+  "change": "chat-model-status-robustness",
+  "result": "ready_for_validation",
+  "scope": "UI-only model catalog robustness and single-warm-model request resolution",
+  "implemented": {
+    "model_payload_shape_guard": true,
+    "accepted_shapes": ["array", "mesh_models", "models", "data"],
+    "partial_payload_safe_empty_summary": true,
+    "chat_full_payload_to_adapter": true,
+    "network_full_payload_to_adapter": true,
+    "single_warm_auto_resolves_to_model_id": true,
+    "zero_warm_keeps_existing_blocked_send_behavior": true,
+    "multiple_warm_keeps_auto": true
+  },
+  "out_of_scope": {
+    "pd_backend_changes": true,
+    "router_changes": true,
+    "runtime_changes": true,
+    "model_status_api_changes": true,
+    "settings_redesign": true,
+    "presentation_restore": true
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "private_path_recorded": false,
+    "endpoint_url_recorded": false,
+    "credentials_recorded": false
+  }
+}

@@ -78,7 +78,7 @@ function DashboardPageContent({
   const connectApiTargetLiveness = resolveConnectApiTargetLiveness(statusQuery, liveMode)
 
   const liveModels = useMemo(
-    () => (modelsQuery.data ? adaptModelsToSummary(modelsQuery.data.mesh_models) : undefined),
+    () => (modelsQuery.data ? adaptModelsToSummary(modelsQuery.data) : undefined),
     [modelsQuery.data]
   )
   const liveData = useMemo(
