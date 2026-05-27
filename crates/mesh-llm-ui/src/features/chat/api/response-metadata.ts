@@ -4,6 +4,7 @@ import type { ChatTimings, ChatUsage } from '@/lib/api/types'
 export type ChatResponseMetadata = {
   messageId: string
   model?: string
+  finishReason?: string
   usage?: ChatUsage
   timings?: ChatTimings
   servedBy?: string
@@ -11,10 +12,10 @@ export type ChatResponseMetadata = {
 
 export type ThreadMessageMetadata = Pick<
   ThreadMessage,
-  'model' | 'route' | 'routeNode' | 'tokens' | 'tokPerSec' | 'ttft'
+  'model' | 'route' | 'routeNode' | 'tokens' | 'tokPerSec' | 'ttft' | 'finishReason'
 >
 
-const metadataKeys = ['model', 'route', 'routeNode', 'tokens', 'tokPerSec', 'ttft'] satisfies Array<
+const metadataKeys = ['model', 'route', 'routeNode', 'tokens', 'tokPerSec', 'ttft', 'finishReason'] satisfies Array<
   keyof ThreadMessageMetadata
 >
 
@@ -54,7 +55,8 @@ export function responseMetadataToThreadMessage(metadata: ChatResponseMetadata):
     routeNode: servedBy,
     tokens: formatTokenCount(outputTokens),
     tokPerSec: formatTokPerSec(outputTokens, metadata.timings?.decode_time_ms),
-    ttft: formatMilliseconds(metadata.timings?.ttft_ms)
+    ttft: formatMilliseconds(metadata.timings?.ttft_ms),
+    finishReason: metadata.finishReason
   }
 }
 

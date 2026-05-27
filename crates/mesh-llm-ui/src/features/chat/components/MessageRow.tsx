@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
 import {
+  AlertTriangle,
   BrainCircuit,
   Eye,
   FileIcon,
@@ -56,6 +57,7 @@ type MessageRowProps = {
   state?: 'default' | 'queued' | 'streaming' | 'stopped' | 'error'
   route?: string
   tokens?: string
+  finishReason?: string
   inspect?: () => void
   inspectLabel?: string
   inspected?: boolean
@@ -252,25 +254,26 @@ function AssistantMessageContent({
           const active = streaming && segment.open
 
           return (
-            <div
+            <details
               className="block rounded-[var(--radius)] border px-3 py-2.5 text-[length:var(--density-type-body)] leading-[1.5] text-fg-dim"
               data-thinking-state={active ? 'active' : 'complete'}
               key={key}
+              open={active ? true : undefined}
               style={{
                 background: 'color-mix(in oklab, var(--color-accent) 5%, var(--color-panel))',
                 borderColor: 'color-mix(in oklab, var(--color-accent) 22%, var(--color-border-soft))'
               }}
             >
-              <span className="mb-1.5 flex select-none items-center gap-1.5 font-mono text-[length:var(--density-type-label)] uppercase tracking-[0.07em] text-fg-faint">
+              <summary className="flex cursor-pointer select-none items-center gap-1.5 font-mono text-[length:var(--density-type-label)] uppercase tracking-[0.07em] text-fg-faint marker:content-['']">
                 {active ? (
                   <Loader2 className="size-3 animate-spin" aria-hidden={true} />
                 ) : (
                   <BrainCircuit className="size-3" aria-hidden={true} strokeWidth={1.7} />
                 )}
                 <span>{active ? 'Thinking' : 'Thinking trace'}</span>
-              </span>
-              <span className="block select-text whitespace-pre-wrap break-words">{segment.text}</span>
-            </div>
+              </summary>
+              <span className="mt-1.5 block select-text whitespace-pre-wrap break-words">{segment.text}</span>
+            </details>
           )
         }
 
@@ -284,6 +287,18 @@ function AssistantMessageContent({
   )
 }
 
+function TruncationWarning() {
+  return (
+    <div
+      className="mt-2 flex items-start gap-2 rounded-[var(--radius)] border border-[color:color-mix(in_oklab,var(--color-warn)_40%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-warn)_8%,transparent)] px-3 py-2 text-[length:var(--density-type-caption)] text-fg-dim"
+      role="note"
+    >
+      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warn" aria-hidden={true} strokeWidth={1.8} />
+      <span>回答已到达输出上限，可能被截断。</span>
+    </div>
+  )
+}
+
 export function MessageRow({
   messageRole,
   body,
@@ -292,6 +307,7 @@ export function MessageRow({
   state = 'default',
   route,
   tokens,
+  finishReason,
   inspect,
   inspectLabel,
   inspected,
@@ -309,6 +325,7 @@ export function MessageRow({
   const isStreamingPlaceholder = state === 'streaming'
   const isStopped = state === 'stopped'
   const isError = state === 'error'
+  const isLengthTruncated = isResponse && !isError && finishReason === 'length'
   const hasAttachmentActions = isUser && attachments.length > 0
   const canInspect = inspect != null
   const canRemoveQueued = isQueued && onRemoveQueued != null
@@ -448,14 +465,17 @@ export function MessageRow({
         ) : null}
       </div>
       {isResponse && !isError ? (
-        <ResponseStatsBar
-          tokens={tokens}
-          tokPerSec={tokPerSec}
-          ttft={ttft}
-          stopped={isStopped}
-          inspect={inspect}
-          inspectLabel={accessibleInspectLabel}
-        />
+        <>
+          <ResponseStatsBar
+            tokens={tokens}
+            tokPerSec={tokPerSec}
+            ttft={ttft}
+            stopped={isStopped}
+            inspect={inspect}
+            inspectLabel={accessibleInspectLabel}
+          />
+          {isLengthTruncated ? <TruncationWarning /> : null}
+        </>
       ) : null}
     </>
   )

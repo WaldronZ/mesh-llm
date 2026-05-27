@@ -1277,6 +1277,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
               tokens={message.tokens}
               tokPerSec={message.tokPerSec}
               ttft={message.ttft}
+              finishReason={message.finishReason}
               inspect={
                 transparencyTabEnabled && transparencyMessage ? () => inspectMessage(transparencyMessage) : undefined
               }

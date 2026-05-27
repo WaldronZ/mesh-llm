@@ -15,10 +15,9 @@ describe('splitAssistantThinking', () => {
     ])
   })
 
-  it('supports streamed output where the opening think tag is missing', () => {
+  it('keeps isolated closing think tags as response text', () => {
     expect(splitAssistantThinking('Check facts.</think> Paris.')).toEqual([
-      { kind: 'thinking', text: 'Check facts.', open: false },
-      { kind: 'response', text: ' Paris.' }
+      { kind: 'response', text: 'Check facts.</think> Paris.' }
     ])
   })
 
@@ -28,9 +27,9 @@ describe('splitAssistantThinking', () => {
     ])
   })
 
-  it('keeps untagged streamed text inside an open thinking segment until the close tag arrives', () => {
+  it('keeps untagged streamed text as visible response text', () => {
     expect(splitAssistantThinking('Checking facts as tokens stream', { streaming: true })).toEqual([
-      { kind: 'thinking', text: 'Checking facts as tokens stream', open: true }
+      { kind: 'response', text: 'Checking facts as tokens stream' }
     ])
   })
 

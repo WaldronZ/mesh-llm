@@ -28,29 +28,16 @@ export function splitAssistantThinking(
   body: string,
   { streaming = false }: SplitAssistantThinkingOptions = {}
 ): AssistantContentSegment[] {
+  void streaming
+
   if (body.length === 0) return []
 
   const segments: AssistantContentSegment[] = []
   let cursor = 0
   let firstSegment = true
 
-  if (streaming && indexOfTag(body, THINK_OPEN_TAG, 0) === -1 && indexOfTag(body, THINK_CLOSE_TAG, 0) === -1) {
-    return [{ kind: 'thinking', text: body, open: true }]
-  }
-
   while (cursor < body.length) {
     const openIndex = indexOfTag(body, THINK_OPEN_TAG, cursor)
-    const closeIndex = indexOfTag(body, THINK_CLOSE_TAG, cursor)
-
-    if (closeIndex !== -1 && (openIndex === -1 || closeIndex < openIndex)) {
-      const thinkingText = body.slice(cursor, closeIndex)
-      if (thinkingText.length > 0) {
-        segments.push({ kind: 'thinking', text: thinkingText, open: false })
-      }
-      cursor = closeIndex + THINK_CLOSE_TAG.length
-      firstSegment = false
-      continue
-    }
 
     if (openIndex === -1) {
       const responseText = body.slice(cursor)

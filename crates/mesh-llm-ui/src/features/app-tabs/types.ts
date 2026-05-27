@@ -178,6 +178,7 @@ export type ThreadMessage = {
   tokens?: string
   tokPerSec?: string
   ttft?: string
+  finishReason?: string
   inspectMessage?: TransparencyMessage
   inspectLabel?: string
 }

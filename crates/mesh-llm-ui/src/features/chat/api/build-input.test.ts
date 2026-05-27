@@ -88,6 +88,17 @@ describe('buildResponsesInput', () => {
     expect(request.input).toEqual([{ role: 'user', content: 'Hello mesh' }])
   })
 
+  it('uses an explicit default output budget for chat responses', async () => {
+    const request = await buildResponsesInput(
+      [createMessage([{ type: 'text', content: 'Hello mesh' }])],
+      'model-a',
+      'client-123',
+      'request-456'
+    )
+
+    expect(request.max_output_tokens).toBe(4096)
+  })
+
   it('prepends the saved system prompt as a responses system message', async () => {
     const request = await buildResponsesInput(
       [createMessage([{ type: 'text', content: 'Explain the cluster status' }])],

@@ -2,6 +2,8 @@ import type { UIMessage, ModelMessage, MessagePart, ContentPart } from '@tanstac
 import type { ResponsesRequest, ResponsesInputMessage, ResponsesInputContentBlock } from '@/lib/api/types'
 import { uploadAttachment } from '@/features/chat/api/upload-attachment'
 
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
 type PartMetadata = {
   fileName?: string
 }
@@ -163,6 +165,7 @@ export async function buildResponsesInput(
     client_id: clientId,
     request_id: requestId,
     input: messagesWithSystemPrompt,
+    max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
     stream: true,
     stream_options: { include_usage: true }
   }

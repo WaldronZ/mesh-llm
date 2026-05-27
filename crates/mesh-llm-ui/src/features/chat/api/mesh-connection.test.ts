@@ -221,7 +221,7 @@ describe('createMeshConnectionAdapter', () => {
         new Response(
           createSSEStream([
             'data: {"type":"response.output_text.delta","delta":"Hello"}\n',
-            'data: {"type":"response.completed","response":{"id":"resp-1","model":"backend-model","usage":{"input_tokens":8,"output_tokens":27,"total_tokens":35},"timings":{"decode_time_ms":1765,"ttft_ms":1116,"total_time_ms":2881},"served_by":"lemony-28"}}\n',
+            'data: {"type":"response.completed","response":{"id":"resp-1","model":"backend-model","finish_reason":"length","usage":{"input_tokens":8,"output_tokens":27,"total_tokens":35},"timings":{"decode_time_ms":1765,"ttft_ms":1116,"total_time_ms":2881},"served_by":"lemony-28"}}\n',
             'data: [DONE]\n'
           ]),
           { status: 200 }
@@ -245,6 +245,7 @@ describe('createMeshConnectionAdapter', () => {
       {
         messageId: startChunk.messageId,
         model: 'backend-model',
+        finishReason: 'length',
         usage: { input_tokens: 8, output_tokens: 27, total_tokens: 35 },
         timings: { decode_time_ms: 1765, ttft_ms: 1116, total_time_ms: 2881 },
         servedBy: 'lemony-28'
@@ -278,6 +279,37 @@ describe('createMeshConnectionAdapter', () => {
     expect(chunks.map((chunk) => chunk.type)).toContain(EventType.TEXT_MESSAGE_END)
     expect(metadata).toHaveLength(1)
     expect(metadata[0]?.timings).toEqual({ decode_time_ms: 1528, ttft_ms: 749, total_time_ms: 2277 })
+  })
+
+  it('stops consuming stream data after response.completed metadata arrives', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          createSSEStream([
+            'data: {"type":"response.output_text.delta","delta":"Hello"}\n',
+            'data: {"type":"response.completed","response":{"id":"resp-1","model":"backend-model","finish_reason":"stop","usage":{"input_tokens":8,"output_tokens":1,"total_tokens":9}}}\n',
+            'data: {"type":"response.output_text.delta","delta":" should be ignored"}\n'
+          ]),
+          { status: 200 }
+        )
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const metadata: ChatResponseMetadata[] = []
+    const adapter = createMeshConnectionAdapter('model-a', (nextMetadata) => metadata.push(nextMetadata))
+
+    const chunks: StreamChunk[] = []
+    for await (const chunk of adapter.connect(createMessages(), undefined, undefined)) {
+      chunks.push(chunk)
+    }
+
+    const text = chunks
+      .filter((chunk) => chunk.type === EventType.TEXT_MESSAGE_CONTENT)
+      .map((chunk) => (chunk.type === EventType.TEXT_MESSAGE_CONTENT ? chunk.delta : ''))
+      .join('')
+
+    expect(text).toBe('Hello')
+    expect(metadata[0]?.finishReason).toBe('stop')
   })
 
   it('surfaces partial streamed text before a stream failure', async () => {

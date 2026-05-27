@@ -870,7 +870,7 @@ describe('ChatPage', () => {
 
   it('renders streamed thinking separately, formats final markdown, and persists the raw assistant body', async () => {
     const user = userEvent.setup()
-    const streamedBody = 'Reasoning text.</think> The capital of France is **Paris**.'
+    const streamedBody = '<think>Reasoning text.</think> The capital of France is **Paris**.'
     chatMock.sendAssistantText = streamedBody
 
     renderChatPage({ mode: 'live' })

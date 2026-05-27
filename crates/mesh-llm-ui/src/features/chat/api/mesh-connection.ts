@@ -249,6 +249,7 @@ async function* runConnect(
       onResponseMetadata?.({
         messageId,
         model: event.response.model,
+        finishReason: event.response.finish_reason ?? undefined,
         usage: event.response.usage,
         timings: {
           decode_time_ms: event.response.timings?.decode_time_ms ?? fallbackTimings.decode_time_ms,
@@ -257,6 +258,7 @@ async function* runConnect(
         },
         servedBy: event.response.served_by
       })
+      break
     }
   }
 

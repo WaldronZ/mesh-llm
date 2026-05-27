@@ -220,7 +220,8 @@ describe('MessageRow', () => {
     expect(streamingControlRow).toHaveClass('mt-3', 'block')
   })
 
-  it('separates closed thinking traces from final assistant response text', () => {
+  it('collapses completed thinking traces by default and keeps final answer visible', async () => {
+    const user = userEvent.setup()
     render(
       <MessageRow
         messageRole="assistant"
@@ -230,14 +231,18 @@ describe('MessageRow', () => {
       />
     )
 
-    expect(screen.getByText('Thinking trace').closest('[data-thinking-state="complete"]')).toHaveTextContent(
-      'Thinking trace'
-    )
-    expect(screen.getByText('Check geography facts before answering.')).toHaveClass('select-text')
+    const thinkingTrace = screen.getByText('Thinking trace').closest('[data-thinking-state="complete"]')
+
+    expect(thinkingTrace).toHaveTextContent('Thinking trace')
+    expect(screen.getByText('Check geography facts before answering.')).not.toBeVisible()
     expect(screen.getByText('The capital of France is Paris.').closest('.select-text')).toBeInTheDocument()
+
+    await user.click(screen.getByText('Thinking trace'))
+
+    expect(screen.getByText('Check geography facts before answering.')).toBeVisible()
   })
 
-  it('treats leading streamed text before a closing think tag as model thinking', () => {
+  it('keeps isolated closing think tags in final answer content', () => {
     render(
       <MessageRow
         messageRole="assistant"
@@ -247,10 +252,10 @@ describe('MessageRow', () => {
       />
     )
 
-    expect(screen.getByText('Thinking trace').closest('[data-thinking-state="complete"]')).toHaveTextContent(
-      'The user asked a simple factual question.'
-    )
-    expect(screen.getByText('The capital of France is Paris.')).toBeInTheDocument()
+    expect(screen.queryByText('Thinking trace')).not.toBeInTheDocument()
+    const answer = screen.getByText(/The user asked a simple factual question/).closest('.select-text')
+    expect(answer).toHaveTextContent('</think>')
+    expect(answer).toHaveTextContent('The capital of France is Paris.')
   })
 
   it('formats final assistant response text as markdown', () => {
@@ -339,7 +344,7 @@ describe('MessageRow', () => {
     expect(screen.getByText('Streaming response...')).toBeInTheDocument()
   })
 
-  it('keeps streamed reasoning without an opening tag inside the active thinking container', () => {
+  it('keeps untagged streamed assistant text visible as response content', () => {
     render(
       <MessageRow
         messageRole="assistant"
@@ -350,11 +355,24 @@ describe('MessageRow', () => {
       />
     )
 
-    const thinkingContainer = screen.getByText('Thinking').closest('[data-thinking-state="active"]')
-
-    expect(thinkingContainer).toHaveTextContent('The user asked for a long story, so plan the structure first.')
-    expect(screen.getByText('The user asked for a long story, so plan the structure first.')).toHaveClass('select-text')
+    expect(screen.queryByText('Thinking')).not.toBeInTheDocument()
+    expect(screen.getByText('The user asked for a long story, so plan the structure first.')).toBeInTheDocument()
     expect(screen.getByText('Streaming response...')).toBeInTheDocument()
+  })
+
+  it('shows a truncation warning when the response stops at the output limit', () => {
+    render(
+      <MessageRow
+        messageRole="assistant"
+        body="Partial answer that reached the configured output limit."
+        timestamp="12:11"
+        model="Qwen3-8B"
+        tokens="1024 tok"
+        finishReason="length"
+      />
+    )
+
+    expect(screen.getByText('回答已到达输出上限，可能被截断。')).toBeInTheDocument()
   })
 
   it('shows the active thinking container as soon as the think tag streams in', () => {

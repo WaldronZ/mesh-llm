@@ -236,6 +236,7 @@ export interface ResponsesRequest {
   client_id: string
   request_id: string
   input: ResponsesInputMessage[]
+  max_output_tokens?: number
   stream: boolean
   stream_options?: { include_usage: boolean }
 }
@@ -273,6 +274,7 @@ export interface ChatSSECompletedEvent {
   response: {
     id?: string
     model?: string
+    finish_reason?: string | null
     usage: ChatUsage
     timings?: ChatTimings
     served_by?: string

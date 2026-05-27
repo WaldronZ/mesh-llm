@@ -12,6 +12,7 @@ describe('responseMetadataToThreadMessage', () => {
       responseMetadataToThreadMessage({
         messageId: 'assistant-1',
         model: 'unsloth/MiniMax-M2.5-GGUF:Q4_K_M',
+        finishReason: 'length',
         usage: { input_tokens: 12, output_tokens: 44, total_tokens: 56 },
         timings: { decode_time_ms: 1522, ttft_ms: 1117, total_time_ms: 2639 },
         servedBy: 'carrack'
@@ -22,7 +23,8 @@ describe('responseMetadataToThreadMessage', () => {
       routeNode: 'carrack',
       tokens: '44 tok',
       tokPerSec: '28.9 tok/s',
-      ttft: '1117ms'
+      ttft: '1117ms',
+      finishReason: 'length'
     })
   })
 })
@@ -62,5 +64,6 @@ describe('threadMessageMetadataEquals', () => {
 
     expect(threadMessageMetadataEquals(base, { ...base })).toBe(true)
     expect(threadMessageMetadataEquals(base, { ...base, tokens: '44 tok' })).toBe(false)
+    expect(threadMessageMetadataEquals(base, { ...base, finishReason: 'length' })).toBe(false)
   })
 })
