@@ -31,6 +31,7 @@ fn mvp_config() -> PdRouterValidationConfig {
             chunked_prefill: None,
         }),
         chunked_prefill: None,
+        streaming_kv: None,
     }
 }
 
@@ -82,9 +83,63 @@ fn normal_and_split_paths_keep_pd_default_off() {
     assert_eq!(pd_serving_mode_from_args(&args).unwrap(), None);
     assert!(!args.pd_router_validation);
     assert!(!args.pd_serving_mvp);
+    assert!(!args.pd_streaming_kv_handoff);
     assert!(!args.pd_serving_mvp_allow_test_faults);
     assert_eq!(args.pd_serving_mvp_test_fault, PdServingMvpTestFault::None);
     assert_eq!(generation_queue_limit_for_pd_mode(None, 4), 4);
+}
+
+#[test]
+fn pd_streaming_kv_requires_mvp_and_single_request_lane() {
+    let args = parse_serve_openai(&[
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-streaming-kv-handoff",
+    ]);
+    let error = pd_serving_mode_from_args(&args).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-streaming-kv-handoff requires --pd-serving-mvp"),
+        "{error:?}"
+    );
+
+    let args = parse_serve_openai(&[
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-stream-control-addr",
+        "127.0.0.1:19430",
+    ]);
+    let error = pd_serving_mode_from_args(&args).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("PD streaming KV config flags require --pd-streaming-kv-handoff"),
+        "{error:?}"
+    );
+
+    let args = parse_serve_openai(&[
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-streaming-kv-handoff",
+        "--generation-concurrency",
+        "2",
+    ]);
+    let mode = pd_serving_mode_from_args(&args).unwrap();
+    let error = validate_pd_serving_backend_constraints(&args, mode).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-serving-mvp requires --generation-concurrency 1"),
+        "{error:?}"
+    );
 }
 
 #[test]

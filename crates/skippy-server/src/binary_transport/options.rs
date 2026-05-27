@@ -3,9 +3,16 @@ use std::{net::SocketAddr, path::PathBuf};
 use anyhow::{bail, Context, Result};
 use skippy_protocol::{binary::WireActivationDType, StageConfig, StageTopology};
 
-use crate::{cli::ServeBinaryArgs, config::load_json, telemetry::TelemetryLevel};
+use crate::{
+    cli::ServeBinaryArgs,
+    config::load_json,
+    frontend::pd_streaming_kv_production::{
+        validate_pd_streaming_kv_capacity, PdStreamingKvCapacity,
+    },
+    telemetry::TelemetryLevel,
+};
 
-use super::WireCondition;
+use super::{pd_streaming_kv_source::PdStreamingKvSourceOptions, WireCondition};
 
 #[derive(Clone)]
 pub struct BinaryStageOptions {
@@ -23,6 +30,7 @@ pub struct BinaryStageOptions {
     pub downstream_wire_condition: WireCondition,
     pub downstream_connect_timeout_secs: u64,
     pub openai: Option<EmbeddedOpenAiStageOptions>,
+    pub(crate) pd_streaming_kv_source: Option<PdStreamingKvSourceOptions>,
 }
 
 #[derive(Clone)]
@@ -67,6 +75,7 @@ impl BinaryStageOptions {
             None => None,
         };
         let bind_addr = args.bind_addr.unwrap_or(config.bind_addr.parse()?);
+        let pd_streaming_kv_source = pd_streaming_kv_source_options_from_args(&args)?;
         let openai = args
             .openai_bind_addr
             .map(|bind_addr| EmbeddedOpenAiStageOptions {
@@ -100,8 +109,47 @@ impl BinaryStageOptions {
             downstream_wire_condition,
             downstream_connect_timeout_secs: args.downstream_connect_timeout_secs,
             openai,
+            pd_streaming_kv_source,
         })
     }
+}
+
+fn pd_streaming_kv_source_options_from_args(
+    args: &ServeBinaryArgs,
+) -> Result<Option<PdStreamingKvSourceOptions>> {
+    let has_source_config = args.pd_stream_control_bind_addr.is_some()
+        || args.pd_stream_page_bind_addr.is_some()
+        || args.pd_stream_max_in_flight_chunks != 2
+        || args.pd_stream_max_in_flight_bytes != 536_870_912
+        || args.pd_stream_max_frame_bytes != 67_108_864
+        || args.pd_stream_max_queue_depth != 4;
+    if has_source_config && !args.pd_streaming_kv_source {
+        bail!("PD streaming KV source options require --pd-streaming-kv-source");
+    }
+    if !args.pd_streaming_kv_source {
+        return Ok(None);
+    }
+    let control_bind_addr = args.pd_stream_control_bind_addr.ok_or_else(|| {
+        anyhow::anyhow!("--pd-streaming-kv-source requires --pd-stream-control-bind-addr")
+    })?;
+    let page_bind_addr = args.pd_stream_page_bind_addr.ok_or_else(|| {
+        anyhow::anyhow!("--pd-streaming-kv-source requires --pd-stream-page-bind-addr")
+    })?;
+    let capacity = PdStreamingKvCapacity {
+        max_in_flight_chunks: args.pd_stream_max_in_flight_chunks,
+        max_in_flight_bytes: args.pd_stream_max_in_flight_bytes,
+        max_frame_bytes: args.pd_stream_max_frame_bytes,
+        max_queue_depth: args.pd_stream_max_queue_depth,
+    };
+    validate_pd_streaming_kv_capacity(capacity)?;
+    Ok(Some(PdStreamingKvSourceOptions {
+        control_bind_addr,
+        page_bind_addr,
+        max_in_flight_chunks: args.pd_stream_max_in_flight_chunks,
+        max_in_flight_bytes: args.pd_stream_max_in_flight_bytes,
+        max_frame_bytes: args.pd_stream_max_frame_bytes,
+        max_queue_depth: args.pd_stream_max_queue_depth,
+    }))
 }
 
 pub fn parse_wire_dtype(value: &str) -> Result<WireActivationDType> {
@@ -110,5 +158,84 @@ pub fn parse_wire_dtype(value: &str) -> Result<WireActivationDType> {
         "fp16" | "f16" => Ok(WireActivationDType::F16),
         "q8" | "int8" | "i8" => Ok(WireActivationDType::Q8),
         _ => bail!("unsupported activation wire dtype {value}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use crate::cli::{Cli, Command};
+
+    use super::pd_streaming_kv_source_options_from_args;
+
+    #[test]
+    fn streaming_kv_source_options_are_default_off() {
+        let cli = Cli::parse_from([
+            "skippy-server",
+            "serve-binary",
+            "--config",
+            "/tmp/stage.json",
+            "--activation-width",
+            "4096",
+        ]);
+        let Command::ServeBinary(args) = cli.command else {
+            panic!("expected serve-binary command");
+        };
+        assert!(pd_streaming_kv_source_options_from_args(&args)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn streaming_kv_source_rejects_missing_bind_addrs() {
+        let cli = Cli::parse_from([
+            "skippy-server",
+            "serve-binary",
+            "--config",
+            "/tmp/stage.json",
+            "--activation-width",
+            "4096",
+            "--pd-streaming-kv-source",
+        ]);
+        let Command::ServeBinary(args) = cli.command else {
+            panic!("expected serve-binary command");
+        };
+        let error = pd_streaming_kv_source_options_from_args(&args).unwrap_err();
+        assert!(
+            error.to_string().contains("--pd-stream-control-bind-addr"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_kv_source_rejects_invalid_capacity() {
+        let cli = Cli::parse_from([
+            "skippy-server",
+            "serve-binary",
+            "--config",
+            "/tmp/stage.json",
+            "--activation-width",
+            "4096",
+            "--pd-streaming-kv-source",
+            "--pd-stream-control-bind-addr",
+            "127.0.0.1:19430",
+            "--pd-stream-page-bind-addr",
+            "127.0.0.1:19431",
+            "--pd-stream-max-frame-bytes",
+            "8",
+            "--pd-stream-max-in-flight-bytes",
+            "4",
+        ]);
+        let Command::ServeBinary(args) = cli.command else {
+            panic!("expected serve-binary command");
+        };
+        let error = pd_streaming_kv_source_options_from_args(&args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("--pd-stream-max-frame-bytes cannot exceed"),
+            "{error:?}"
+        );
     }
 }

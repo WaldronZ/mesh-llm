@@ -1,0 +1,42 @@
+{
+  "change": "pd-streaming-kv-production-integration",
+  "segment": "third-b-router-client-import-decode",
+  "result": "inconclusive",
+  "recommendation": "ready_for_short_foreground_serving_smoke",
+  "scope": {
+    "router_client_control_channel": true,
+    "router_client_page_stream": true,
+    "per_chunk_token_payload_send": true,
+    "mac_import_kv_page": true,
+    "final_contiguous_gate": true,
+    "trim_replay_last_token_bootstrap": true,
+    "decode_callback_integration": true,
+    "foreground_short_smoke": false,
+    "foreground_4k_smoke": false,
+    "foreground_8k_smoke": false
+  },
+  "failure_semantics": {
+    "pre_content_fail_closed": true,
+    "full_state_fallback_as_streaming_pass": false,
+    "post_content_transparent_fallback": false,
+    "cleanup_on_tested_failure_paths": true
+  },
+  "telemetry": {
+    "protocol": "pd-kv-stream/1",
+    "segment_count": true,
+    "payload_bytes": true,
+    "import_ms": true,
+    "bootstrap_ms": true,
+    "decode_start_position": true,
+    "per_chunk_prefill_export_transfer_timing": false
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_native_payload_recorded": false,
+    "private_path_recorded": false,
+    "real_hostname_recorded": false,
+    "credentials_recorded": false
+  }
+}

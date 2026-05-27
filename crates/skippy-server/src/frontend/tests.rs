@@ -759,6 +759,7 @@ async fn real_multimodal_split_smoke_when_fixture_is_set() -> Result<()> {
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             downstream_connect_timeout_secs: 5,
             openai: None,
+            pd_streaming_kv_source: None,
         });
     let ready = connect_endpoint_ready(&stage1_addr.to_string(), 120);
     if let Err(error) = ready {
@@ -1518,6 +1519,188 @@ fn pd_serving_mvp_config_accepts_chunked_prefill_capability() {
 }
 
 #[test]
+fn pd_streaming_kv_config_accepts_explicit_default_off_enablement() {
+    use clap::Parser as _;
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-max-prompt-tokens",
+        "8192",
+        "--pd-max-prefill-batch",
+        "2048",
+        "--pd-max-ctx-size",
+        "8192",
+        "--pd-max-handoff-bytes",
+        "8589934592",
+        "--pd-estimated-kv-bytes-per-token",
+        "902000",
+        "--pd-chunked-prefill",
+        "--pd-prefill-chunk-size",
+        "1024",
+        "--pd-streaming-kv-handoff",
+        "--pd-stream-control-addr",
+        "127.0.0.1:19430",
+        "--pd-stream-page-addr",
+        "127.0.0.1:19431",
+        "--pd-stream-max-in-flight-chunks",
+        "2",
+        "--pd-stream-max-in-flight-bytes",
+        "536870912",
+        "--pd-stream-max-frame-bytes",
+        "67108864",
+        "--pd-stream-max-queue-depth",
+        "4",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let config = pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap();
+    let streaming = config.streaming_kv.as_ref().expect("streaming config");
+
+    assert_eq!(config.handoff_mode(), PdServingHandoffMode::StreamingKv);
+    assert_eq!(streaming.control_addr, "127.0.0.1:19430");
+    assert_eq!(streaming.page_addr, "127.0.0.1:19431");
+    assert_eq!(streaming.max_in_flight_chunks, 2);
+    assert_eq!(streaming.max_in_flight_bytes, 536_870_912);
+    assert_eq!(streaming.max_frame_bytes, 67_108_864);
+    assert_eq!(streaming.max_queue_depth, 4);
+}
+
+#[test]
+fn pd_streaming_kv_config_rejects_missing_and_invalid_config() {
+    use clap::Parser as _;
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-max-prompt-tokens",
+        "8192",
+        "--pd-max-prefill-batch",
+        "2048",
+        "--pd-max-ctx-size",
+        "8192",
+        "--pd-max-handoff-bytes",
+        "8589934592",
+        "--pd-estimated-kv-bytes-per-token",
+        "902000",
+        "--pd-streaming-kv-handoff",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let error =
+        pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-streaming-kv-handoff requires --pd-stream-control-addr"),
+        "{error:?}"
+    );
+
+    let cli = crate::cli::Cli::parse_from([
+        "skippy-server",
+        "serve-openai",
+        "--config",
+        "/tmp/stage.json",
+        "--pd-serving-mvp",
+        "--pd-prefill-addr",
+        "127.0.0.1:19081",
+        "--pd-decode-addr",
+        "127.0.0.1:19082",
+        "--pd-source-node-id",
+        "pgx-prefill-mvp",
+        "--pd-target-node-id",
+        "mac-decode-mvp",
+        "--pd-expected-artifact-sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--pd-expected-tokenizer-hash",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "--pd-expected-chat-template-hash",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "--pd-max-prompt-tokens",
+        "8192",
+        "--pd-max-prefill-batch",
+        "2048",
+        "--pd-max-ctx-size",
+        "8192",
+        "--pd-max-handoff-bytes",
+        "8589934592",
+        "--pd-estimated-kv-bytes-per-token",
+        "902000",
+        "--pd-streaming-kv-handoff",
+        "--pd-stream-control-addr",
+        "127.0.0.1:19430",
+        "--pd-stream-page-addr",
+        "127.0.0.1:19431",
+        "--pd-stream-max-in-flight-chunks",
+        "3",
+        "--pd-stream-max-queue-depth",
+        "2",
+    ]);
+    let crate::cli::Command::ServeOpenAi(args) = cli.command else {
+        panic!("expected serve-openai command");
+    };
+    let error =
+        pd_router_validation_config_from_args(&args, "model", PdServingMode::Mvp).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("--pd-stream-max-in-flight-chunks cannot exceed"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn pd_streaming_kv_skeleton_fails_pre_content_unavailable() {
+    let error = pd_streaming_kv_not_ready_error();
+    assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        error.body().error.code.as_deref(),
+        Some("service_unavailable")
+    );
+    assert!(error
+        .body()
+        .error
+        .message
+        .contains("source_integration_not_implemented"));
+}
+
+#[test]
 fn pd_serving_mvp_config_requires_admission_policy() {
     use clap::Parser as _;
 
@@ -1633,6 +1816,7 @@ fn pd_serving_status_is_sanitized_and_additive() {
             chunked_prefill: None,
         }),
         chunked_prefill: None,
+        streaming_kv: None,
     };
     let status = pd_serving_status_for_start(&config, 1);
     let serialized = serde_json::to_value(&status).unwrap();
@@ -1660,6 +1844,77 @@ fn pd_serving_status_is_sanitized_and_additive() {
     assert!(!serialized.contains("127.0.0.1"));
     assert!(!serialized.contains("aaaaaaaaaaaaaaaa"));
     assert!(!serialized.contains("/Users/"));
+}
+
+#[test]
+fn pd_streaming_kv_status_is_sanitized_and_reports_capacity() {
+    let config = PdRouterValidationConfig {
+        mode: PdServingMode::Mvp,
+        prefill_addr: "127.0.0.1:19081".to_string(),
+        decode_addr: "127.0.0.1:19082".to_string(),
+        wire_dtype: WireActivationDType::F16,
+        startup_timeout_secs: 1,
+        model_id: "google_gemma-4-31B-it-bf16".to_string(),
+        expected_artifact_sha256:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        expected_tokenizer_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            .to_string(),
+        expected_chat_template_hash:
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+        source_node_id: "private-prefill-host.example".to_string(),
+        target_node_id: "private-decode-host.example".to_string(),
+        fault_injection: PdRouterValidationFault::None,
+        mvp_test_fault: PdServingMvpTestFault::None,
+        admission: Some(PdAdmissionPolicy {
+            max_prompt_tokens: 8192,
+            max_prefill_batch: 2048,
+            max_ctx_size: 8192,
+            max_handoff_bytes: 8_589_934_592,
+            estimated_kv_bytes_per_token: Some(902_000),
+            kv_bytes_per_token_source: PdKvBytesPerTokenSource::Configured,
+            over_limit_action: crate::cli::PdAdmissionOverLimitAction::Fallback,
+            chunked_prefill: Some(PdChunkedPrefillConfig::new(1024, 2048).unwrap()),
+        }),
+        chunked_prefill: Some(PdChunkedPrefillConfig::new(1024, 2048).unwrap()),
+        streaming_kv: Some(PdStreamingKvConfig {
+            control_addr: "127.0.0.1:19430".to_string(),
+            page_addr: "127.0.0.1:19431".to_string(),
+            max_in_flight_chunks: 2,
+            max_in_flight_bytes: 536_870_912,
+            max_frame_bytes: 67_108_864,
+            max_queue_depth: 4,
+        }),
+    };
+    let status = pd_serving_status_for_start(&config, 1);
+    let serialized = serde_json::to_value(&status).unwrap();
+
+    assert_eq!(serialized["kv_format_version"], "pd-kv-stream/1");
+    assert_eq!(serialized["streaming_kv_enabled"], true);
+    assert_eq!(serialized["streaming_kv_protocol"], "pd-kv-stream/1");
+    assert_eq!(
+        serialized["streaming_kv_lifecycle_state"],
+        "skeleton_not_ready"
+    );
+    assert_eq!(serialized["streaming_kv_control_channel_configured"], true);
+    assert_eq!(serialized["streaming_kv_page_stream_configured"], true);
+    assert_eq!(serialized["streaming_kv_max_in_flight_chunks"], 2);
+    assert_eq!(serialized["streaming_kv_max_in_flight_bytes"], 536_870_912);
+    assert_eq!(serialized["streaming_kv_max_frame_bytes"], 67_108_864);
+    assert_eq!(serialized["streaming_kv_max_queue_depth"], 4);
+
+    let text = serialized.to_string();
+    for forbidden in [
+        "private-prefill-host",
+        "private-decode-host",
+        "127.0.0.1",
+        "19430",
+        "19431",
+        "aaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbb",
+        "cccccccccccccccc",
+    ] {
+        assert!(!text.contains(forbidden), "status leaked {forbidden}");
+    }
 }
 
 #[test]

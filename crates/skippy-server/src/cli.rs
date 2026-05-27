@@ -131,6 +131,26 @@ pub struct ServeBinaryArgs {
         help = "Override n_gpu_layers for the embedded OpenAI draft model. Defaults to the stage config n_gpu_layers."
     )]
     pub openai_draft_n_gpu_layers: Option<i32>,
+    #[arg(
+        long,
+        help = "Enable default-off pd-kv-stream/1 source listeners for production streaming KV handoff."
+    )]
+    pub pd_streaming_kv_source: bool,
+    #[arg(
+        long,
+        help = "Control channel bind address for --pd-streaming-kv-source."
+    )]
+    pub pd_stream_control_bind_addr: Option<SocketAddr>,
+    #[arg(long, help = "Page stream bind address for --pd-streaming-kv-source.")]
+    pub pd_stream_page_bind_addr: Option<SocketAddr>,
+    #[arg(long, default_value_t = 2)]
+    pub pd_stream_max_in_flight_chunks: usize,
+    #[arg(long, default_value_t = 536_870_912)]
+    pub pd_stream_max_in_flight_bytes: u64,
+    #[arg(long, default_value_t = 67_108_864)]
+    pub pd_stream_max_frame_bytes: u64,
+    #[arg(long, default_value_t = 4)]
+    pub pd_stream_max_queue_depth: usize,
 }
 
 #[derive(Parser)]
@@ -243,6 +263,29 @@ pub struct ServeOpenAiArgs {
         help = "Maximum prompt tokens per PD prefill chunk. Defaults to --pd-max-prefill-batch when chunked prefill is enabled."
     )]
     pub pd_prefill_chunk_size: Option<usize>,
+    #[arg(
+        long,
+        help = "Enable default-off production streaming KV handoff for the PD serving MVP path."
+    )]
+    pub pd_streaming_kv_handoff: bool,
+    #[arg(
+        long,
+        help = "PD streaming KV control channel endpoint. Required with --pd-streaming-kv-handoff."
+    )]
+    pub pd_stream_control_addr: Option<String>,
+    #[arg(
+        long,
+        help = "PD streaming KV page stream endpoint. Required with --pd-streaming-kv-handoff."
+    )]
+    pub pd_stream_page_addr: Option<String>,
+    #[arg(long, default_value_t = 2)]
+    pub pd_stream_max_in_flight_chunks: usize,
+    #[arg(long, default_value_t = 536_870_912)]
+    pub pd_stream_max_in_flight_bytes: u64,
+    #[arg(long, default_value_t = 67_108_864)]
+    pub pd_stream_max_frame_bytes: u64,
+    #[arg(long, default_value_t = 4)]
+    pub pd_stream_max_queue_depth: usize,
     #[arg(long, default_value_t = 256)]
     pub prefill_chunk_size: usize,
     #[arg(
@@ -367,8 +410,38 @@ mod tests {
         assert!(args.pd_estimated_kv_bytes_per_token.is_none());
         assert!(!args.pd_chunked_prefill);
         assert!(args.pd_prefill_chunk_size.is_none());
+        assert!(!args.pd_streaming_kv_handoff);
+        assert!(args.pd_stream_control_addr.is_none());
+        assert!(args.pd_stream_page_addr.is_none());
+        assert_eq!(args.pd_stream_max_in_flight_chunks, 2);
+        assert_eq!(args.pd_stream_max_in_flight_bytes, 536_870_912);
+        assert_eq!(args.pd_stream_max_frame_bytes, 67_108_864);
+        assert_eq!(args.pd_stream_max_queue_depth, 4);
         assert!(args.pd_prefill_addr.is_none());
         assert!(args.pd_decode_addr.is_none());
+    }
+
+    #[test]
+    fn serve_binary_streaming_kv_source_defaults_off() {
+        let cli = Cli::parse_from([
+            "skippy-server",
+            "serve-binary",
+            "--config",
+            "/tmp/stage.json",
+            "--activation-width",
+            "4096",
+        ]);
+
+        let Command::ServeBinary(args) = cli.command else {
+            panic!("expected serve-binary command");
+        };
+        assert!(!args.pd_streaming_kv_source);
+        assert!(args.pd_stream_control_bind_addr.is_none());
+        assert!(args.pd_stream_page_bind_addr.is_none());
+        assert_eq!(args.pd_stream_max_in_flight_chunks, 2);
+        assert_eq!(args.pd_stream_max_in_flight_bytes, 536_870_912);
+        assert_eq!(args.pd_stream_max_frame_bytes, 67_108_864);
+        assert_eq!(args.pd_stream_max_queue_depth, 4);
     }
 
     #[test]
@@ -439,6 +512,19 @@ mod tests {
             "--pd-chunked-prefill",
             "--pd-prefill-chunk-size",
             "1800",
+            "--pd-streaming-kv-handoff",
+            "--pd-stream-control-addr",
+            "127.0.0.1:19430",
+            "--pd-stream-page-addr",
+            "127.0.0.1:19431",
+            "--pd-stream-max-in-flight-chunks",
+            "2",
+            "--pd-stream-max-in-flight-bytes",
+            "536870912",
+            "--pd-stream-max-frame-bytes",
+            "67108864",
+            "--pd-stream-max-queue-depth",
+            "4",
         ]);
 
         let Command::ServeOpenAi(args) = cli.command else {
@@ -466,5 +552,15 @@ mod tests {
         assert_eq!(args.pd_estimated_kv_bytes_per_token, Some(902000));
         assert!(args.pd_chunked_prefill);
         assert_eq!(args.pd_prefill_chunk_size, Some(1800));
+        assert!(args.pd_streaming_kv_handoff);
+        assert_eq!(
+            args.pd_stream_control_addr.as_deref(),
+            Some("127.0.0.1:19430")
+        );
+        assert_eq!(args.pd_stream_page_addr.as_deref(), Some("127.0.0.1:19431"));
+        assert_eq!(args.pd_stream_max_in_flight_chunks, 2);
+        assert_eq!(args.pd_stream_max_in_flight_bytes, 536_870_912);
+        assert_eq!(args.pd_stream_max_frame_bytes, 67_108_864);
+        assert_eq!(args.pd_stream_max_queue_depth, 4);
     }
 }

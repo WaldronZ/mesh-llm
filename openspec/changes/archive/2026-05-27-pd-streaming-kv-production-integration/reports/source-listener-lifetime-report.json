@@ -1,0 +1,33 @@
+{
+  "change": "pd-streaming-kv-production-integration",
+  "segment": "source-listener-lifetime-fix",
+  "result": "inconclusive",
+  "recommendation": "ready_for_short_foreground_serving_smoke_rerun",
+  "root_cause": "source_listener_returned_after_single_request_scoped_control_page_pair",
+  "implemented": {
+    "serial_request_scoped_accept_loop": true,
+    "single_active_request_only": true,
+    "eof_continues_listener": true,
+    "bad_frame_continues_listener": true,
+    "stop_continues_listener": true,
+    "request_cleanup_on_eof_or_error": true,
+    "bounded_diagnostics": true,
+    "full_state_not_used_as_streaming_pass": true
+  },
+  "not_run": {
+    "mac_pgx_processes": true,
+    "short_foreground_smoke": true,
+    "four_k_foreground_smoke": true,
+    "eight_k_foreground_smoke": true
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_native_payload_recorded": false,
+    "private_path_recorded": false,
+    "endpoint_url_recorded": false,
+    "real_hostname_recorded": false,
+    "credentials_recorded": false
+  }
+}

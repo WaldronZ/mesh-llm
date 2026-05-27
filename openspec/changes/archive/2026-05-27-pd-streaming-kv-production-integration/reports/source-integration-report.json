@@ -1,0 +1,42 @@
+{
+  "change": "pd-streaming-kv-production-integration",
+  "segment": "third-a-source-integration",
+  "result": "inconclusive",
+  "recommendation": "ready_for_router_client_integration",
+  "scope": {
+    "production_source_wire": true,
+    "serve_binary_source_listeners": true,
+    "source_prefill_chunk": true,
+    "source_export_kv_page_segments": true,
+    "router_client_import_decode": false,
+    "foreground_short_smoke": false,
+    "foreground_4k_smoke": false,
+    "foreground_8k_smoke": false
+  },
+  "protocol": {
+    "version": "pd-kv-stream/1",
+    "control_channel": true,
+    "page_stream": true,
+    "full_state_used_as_streaming_pass": false
+  },
+  "fail_closed_tests": [
+    "default_off",
+    "missing_control_page_bind_addr",
+    "invalid_capacity",
+    "wrong_protocol_version",
+    "missing_token_payload",
+    "full_state_frame",
+    "identity_mismatch",
+    "sanitized_error_event",
+    "frame_size_cap"
+  ],
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_native_payload_recorded": false,
+    "private_path_recorded": false,
+    "real_hostname_recorded": false,
+    "credentials_recorded": false
+  }
+}

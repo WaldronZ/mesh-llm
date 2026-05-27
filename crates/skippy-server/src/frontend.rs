@@ -81,6 +81,7 @@ mod pd_hardening_tests;
 #[cfg(test)]
 mod pd_kv_page_handoff;
 mod pd_router_validation;
+pub(crate) mod pd_streaming_kv_production;
 mod prefill;
 mod prefix_cache;
 mod prompting;
@@ -90,8 +91,8 @@ mod util;
 mod wire_messages;
 
 use self::{
-    pd_admission::*, pd_chunked_prefill::*, prefill::*, request::*, speculative::*, util::*,
-    wire_messages::*,
+    pd_admission::*, pd_chunked_prefill::*, pd_streaming_kv_production::*, prefill::*, request::*,
+    speculative::*, util::*, wire_messages::*,
 };
 
 static OPENAI_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -476,6 +477,18 @@ fn pd_serving_mode_from_args(args: &ServeOpenAiArgs) -> Result<Option<PdServingM
     if args.pd_router_validation && args.pd_serving_mvp {
         bail!("--pd-router-validation cannot be combined with --pd-serving-mvp");
     }
+    let has_streaming_kv_config = args.pd_stream_control_addr.is_some()
+        || args.pd_stream_page_addr.is_some()
+        || args.pd_stream_max_in_flight_chunks != 2
+        || args.pd_stream_max_in_flight_bytes != 536_870_912
+        || args.pd_stream_max_frame_bytes != 67_108_864
+        || args.pd_stream_max_queue_depth != 4;
+    if has_streaming_kv_config && !args.pd_streaming_kv_handoff {
+        bail!("PD streaming KV config flags require --pd-streaming-kv-handoff");
+    }
+    if args.pd_streaming_kv_handoff && !args.pd_serving_mvp {
+        bail!("--pd-streaming-kv-handoff requires --pd-serving-mvp");
+    }
     if !args.pd_serving_mvp
         && (args.pd_serving_mvp_allow_test_faults
             || args.pd_serving_mvp_test_fault != PdServingMvpTestFault::None)
@@ -762,6 +775,7 @@ struct PdRouterValidationConfig {
     mvp_test_fault: PdServingMvpTestFault,
     admission: Option<PdAdmissionPolicy>,
     chunked_prefill: Option<PdChunkedPrefillConfig>,
+    streaming_kv: Option<PdStreamingKvConfig>,
 }
 
 impl PdRouterValidationConfig {
@@ -788,6 +802,14 @@ impl PdRouterValidationConfig {
             self.mvp_test_fault.as_label()
         } else {
             self.fault_injection.as_label()
+        }
+    }
+
+    fn handoff_mode(&self) -> PdServingHandoffMode {
+        if self.streaming_kv.is_some() {
+            PdServingHandoffMode::StreamingKv
+        } else {
+            PdServingHandoffMode::FullState
         }
     }
 }
@@ -824,6 +846,7 @@ fn pd_router_validation_config_from_args(
         bail!("--pd-serving-mvp-test-fault requires --pd-serving-mvp");
     }
     let admission = pd_admission_policy_from_args(args, mode, model_id)?;
+    let streaming_kv = pd_streaming_kv_config_from_args(args, mode)?;
     let config = PdRouterValidationConfig {
         mode,
         prefill_addr: required(&args.pd_prefill_addr, "--pd-prefill-addr")?,
@@ -853,6 +876,7 @@ fn pd_router_validation_config_from_args(
         },
         chunked_prefill: admission.and_then(|policy| policy.chunked_prefill),
         admission,
+        streaming_kv,
     };
     validate_pd_hash(
         &config.expected_artifact_sha256,
@@ -897,6 +921,15 @@ struct PdServingStatus {
     compatibility_state: &'static str,
     allowed_model: String,
     kv_format_version: &'static str,
+    streaming_kv_enabled: bool,
+    streaming_kv_protocol: &'static str,
+    streaming_kv_lifecycle_state: &'static str,
+    streaming_kv_control_channel_configured: bool,
+    streaming_kv_page_stream_configured: bool,
+    streaming_kv_max_in_flight_chunks: Option<usize>,
+    streaming_kv_max_in_flight_bytes: Option<u64>,
+    streaming_kv_max_frame_bytes: Option<u64>,
+    streaming_kv_max_queue_depth: Option<usize>,
     inflight_limit: usize,
     inflight_current: usize,
     capacity_state: &'static str,
@@ -933,7 +966,38 @@ fn pd_serving_status_for_start(
         decode_worker_health: "configured",
         compatibility_state: "configured-identities",
         allowed_model: config.model_id.clone(),
-        kv_format_version: "native-full-state/1",
+        kv_format_version: config.handoff_mode().protocol_label(),
+        streaming_kv_enabled: config.streaming_kv.is_some(),
+        streaming_kv_protocol: PD_STREAMING_KV_PROTOCOL_VERSION,
+        streaming_kv_lifecycle_state: if config.streaming_kv.is_some() {
+            "skeleton_not_ready"
+        } else {
+            "disabled"
+        },
+        streaming_kv_control_channel_configured: config
+            .streaming_kv
+            .as_ref()
+            .is_some_and(|streaming| !streaming.control_addr.trim().is_empty()),
+        streaming_kv_page_stream_configured: config
+            .streaming_kv
+            .as_ref()
+            .is_some_and(|streaming| !streaming.page_addr.trim().is_empty()),
+        streaming_kv_max_in_flight_chunks: config
+            .streaming_kv
+            .as_ref()
+            .map(|streaming| streaming.max_in_flight_chunks),
+        streaming_kv_max_in_flight_bytes: config
+            .streaming_kv
+            .as_ref()
+            .map(|streaming| streaming.max_in_flight_bytes),
+        streaming_kv_max_frame_bytes: config
+            .streaming_kv
+            .as_ref()
+            .map(|streaming| streaming.max_frame_bytes),
+        streaming_kv_max_queue_depth: config
+            .streaming_kv
+            .as_ref()
+            .map(|streaming| streaming.max_queue_depth),
         inflight_limit,
         inflight_current: 0,
         capacity_state: "open",
@@ -1008,6 +1072,7 @@ fn emit_pd_serving_status(
         "pd.kv_format_version".to_string(),
         json!(status.kv_format_version),
     );
+    insert_pd_streaming_kv_status_attrs(&mut attrs, config.streaming_kv.as_ref());
     attrs.insert(
         "pd.inflight_limit".to_string(),
         json!(status.inflight_limit),

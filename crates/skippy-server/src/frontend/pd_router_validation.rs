@@ -183,6 +183,38 @@ impl StageOpenAiBackend {
                 |token| on_token(token).map(|control| control.control),
             );
         }
+        if request.config.streaming_kv.is_some() {
+            let mut streaming_backend = RouterPdStreamingKvBackend::new(
+                request.config,
+                self.runtime.clone(),
+                request.ids.session_label.clone(),
+                request.ids.request_id,
+                request.prompt_token_ids,
+                request.sampling,
+                request.chat_sampling_metadata,
+            );
+            let result = run_pd_streaming_kv_production_lifecycle(
+                request.config,
+                request.prompt_token_ids,
+                request.max_tokens,
+                &mut streaming_backend,
+                |token| on_token(token),
+            );
+            return match result {
+                Ok(result) => {
+                    self.emit_pd_streaming_kv_summary(request.ids, &result, started.elapsed_ms());
+                    Ok(GenerationCacheStats::default())
+                }
+                Err(error) => {
+                    self.emit_pd_streaming_kv_unavailable(
+                        request.ids,
+                        "streaming_kv_lifecycle_failed",
+                        started.elapsed_ms(),
+                    );
+                    Err(error)
+                }
+            };
+        }
 
         let mut timing = PdTiming::default();
         let prompt_token_count = request.prompt_token_ids.len();
@@ -462,6 +494,86 @@ impl StageOpenAiBackend {
                 );
             }
         }
+        attrs.insert("llama_stage.elapsed_ms".to_string(), json!(elapsed_ms));
+        self.telemetry.emit(mode.telemetry_event(), attrs);
+    }
+
+    fn emit_pd_streaming_kv_unavailable(
+        &self,
+        ids: &OpenAiGenerationIds,
+        reason: &'static str,
+        elapsed_ms: f64,
+    ) {
+        let mut attrs = self.openai_attrs(ids);
+        let mode = self.pd_serving_mode().unwrap_or(PdServingMode::Mvp);
+        attrs.insert("pd.mode".to_string(), json!(mode.backend_label()));
+        attrs.insert("pd.validation_or_mvp.result".to_string(), json!("fail"));
+        attrs.insert(mode.result_attr().to_string(), json!("fail"));
+        attrs.insert(
+            mode.failure_phase_attr().to_string(),
+            json!("streaming_kv_lifecycle"),
+        );
+        attrs.insert(mode.failure_reason_attr().to_string(), json!(reason));
+        attrs.insert("pd.pre_content".to_string(), json!(true));
+        attrs.insert("pd.content_delta_count".to_string(), json!(0));
+        attrs.insert("pd.streaming_kv.enabled".to_string(), json!(true));
+        attrs.insert(
+            "pd.streaming_kv.protocol".to_string(),
+            json!(PD_STREAMING_KV_PROTOCOL_VERSION),
+        );
+        attrs.insert(
+            "pd.streaming_kv.failure_phase".to_string(),
+            json!("streaming_kv_lifecycle"),
+        );
+        attrs.insert("pd.streaming_kv.failure_reason".to_string(), json!(reason));
+        attrs.insert("llama_stage.elapsed_ms".to_string(), json!(elapsed_ms));
+        self.telemetry.emit(mode.telemetry_event(), attrs);
+    }
+
+    fn emit_pd_streaming_kv_summary(
+        &self,
+        ids: &OpenAiGenerationIds,
+        result: &PdStreamingKvLifecycleResult,
+        elapsed_ms: f64,
+    ) {
+        let mut attrs = self.openai_attrs(ids);
+        let mode = self.pd_serving_mode().unwrap_or(PdServingMode::Mvp);
+        attrs.insert("pd.mode".to_string(), json!(mode.backend_label()));
+        attrs.insert("pd.validation_or_mvp.result".to_string(), json!("pass"));
+        attrs.insert(mode.result_attr().to_string(), json!("pass"));
+        attrs.insert("pd.streaming_kv.enabled".to_string(), json!(true));
+        attrs.insert(
+            "pd.streaming_kv.protocol".to_string(),
+            json!(PD_STREAMING_KV_PROTOCOL_VERSION),
+        );
+        attrs.insert(
+            "pd.streaming_kv.lifecycle_state".to_string(),
+            json!("decode_complete"),
+        );
+        attrs.insert(
+            "pd.streaming_kv.decode_start_position".to_string(),
+            json!(result.decode_start_position),
+        );
+        attrs.insert(
+            "pd.streaming_kv.decoded_tokens".to_string(),
+            json!(result.decoded_tokens),
+        );
+        attrs.insert(
+            "pd.streaming_kv.segment_count".to_string(),
+            json!(result.segment_count),
+        );
+        attrs.insert(
+            "pd.streaming_kv.payload_bytes".to_string(),
+            json!(result.payload_bytes),
+        );
+        attrs.insert(
+            "pd.streaming_kv.import_ms".to_string(),
+            json!(result.import_ms),
+        );
+        attrs.insert(
+            "pd.streaming_kv.bootstrap_ms".to_string(),
+            json!(result.bootstrap_ms),
+        );
         attrs.insert("llama_stage.elapsed_ms".to_string(), json!(elapsed_ms));
         self.telemetry.emit(mode.telemetry_event(), attrs);
     }
@@ -1182,6 +1294,7 @@ mod tests {
             mvp_test_fault: PdServingMvpTestFault::None,
             admission: None,
             chunked_prefill: None,
+            streaming_kv: None,
         }
     }
 

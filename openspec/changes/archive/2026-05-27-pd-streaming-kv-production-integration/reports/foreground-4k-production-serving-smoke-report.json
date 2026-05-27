@@ -1,0 +1,136 @@
+{
+  "change": "pd-streaming-kv-production-integration",
+  "segment": "foreground-4k-production-serving-smoke",
+  "result": "pass",
+  "scope": {
+    "four_k_foreground_smoke": true,
+    "eight_k_foreground_smoke": false,
+    "used_skippy_correctness_harness_as_pass": false,
+    "full_state_used_as_streaming_pass": false,
+    "production_serving_path": true
+  },
+  "request": {
+    "prompt_id": "pd-prod-4k-synthetic-2026-05-26",
+    "target_token_class": "4k",
+    "prompt_token_count": 4096,
+    "requested_max_tokens": 32,
+    "stream": true,
+    "temperature": 0,
+    "seed": 42
+  },
+  "observations": {
+    "router_http_200_done": true,
+    "assistant_content_observed": true,
+    "assistant_content_recorded": false,
+    "content_delta_count": 32,
+    "reasoning_delta_count": 0,
+    "finish_reasons": [
+      "length"
+    ],
+    "elapsed_s": 92.201,
+    "source_process_alive_during_request": true,
+    "source_control_listener_observed_before_request": true,
+    "source_page_listener_observed_before_request": true,
+    "source_control_listener_observed_after_request": true,
+    "source_page_listener_observed_after_request": true,
+    "direct_lifecycle_diagnostics_observed": true,
+    "source_listener_active_observed": true,
+    "source_request_start_observed": true,
+    "source_chunk_request_observed": true,
+    "source_prefill_start_end_observed": true,
+    "source_export_start_end_observed": true,
+    "source_page_frame_write_start_end_observed": true,
+    "source_chunk_done_observed": true,
+    "router_connect_observed": true,
+    "router_chunk_request_send_observed": true,
+    "router_control_event_receive_observed": true,
+    "router_page_frame_received_observed": true,
+    "mac_import_kv_page_observed": true,
+    "final_gate_observed": true,
+    "bootstrap_observed": true,
+    "decode_start_observed": true,
+    "cleanup_observed": true,
+    "pd_kv_stream_protocol": "pd-kv-stream/1",
+    "chunk_count": 4,
+    "chunks": [
+      {
+        "chunk_index": 0,
+        "token_start": 0,
+        "token_end": 1024,
+        "segment_count": 2,
+        "page_bytes": 922746880
+      },
+      {
+        "chunk_index": 1,
+        "token_start": 1024,
+        "token_end": 2048,
+        "segment_count": 2,
+        "page_bytes": 922746880
+      },
+      {
+        "chunk_index": 2,
+        "token_start": 2048,
+        "token_end": 3072,
+        "segment_count": 2,
+        "page_bytes": 922746880
+      },
+      {
+        "chunk_index": 3,
+        "token_start": 3072,
+        "token_end": 4096,
+        "segment_count": 2,
+        "page_bytes": 922746880
+      }
+    ],
+    "segment_count": 8,
+    "segment_kinds": [
+      "iswa/base",
+      "iswa/swa"
+    ],
+    "segment_kind_counts": {
+      "iswa/base": 4,
+      "iswa/swa": 4
+    },
+    "page_bytes_per_chunk": 922746880,
+    "total_page_bytes": 3690987520,
+    "bytes_per_token": 901120,
+    "decode_start_position": 4096,
+    "logits_ready": true,
+    "bootstrap_ms": 117.263708,
+    "no_full_state_fallback": true,
+    "no_transparent_fallback": true,
+    "ports_released_after_cleanup": true
+  },
+  "timing": {
+    "request_elapsed_s": 92.201,
+    "bootstrap_ms": 117.263708,
+    "prefill_total": "not_recorded",
+    "export_total": "not_recorded",
+    "transfer_total": "not_recorded",
+    "import_total": "not_recorded",
+    "lifecycle_overlap": "not_recorded",
+    "notes": "Production diagnostics proved lifecycle coverage but do not yet emit complete per-phase wall-clock timing buckets."
+  },
+  "reference_only": {
+    "previous_harness_four_k_decode_ready_s": 43.12,
+    "previous_harness_four_k_page_bytes": 3690987520,
+    "previous_harness_four_k_overlap_s": 23.31,
+    "same_measurement_harness": false
+  },
+  "diagnostics": {
+    "stable_prefix": "pd.kv_stream.lifecycle",
+    "default_router_port_occupied_by_unrelated_local_process": true,
+    "used_alternate_local_router_port": true,
+    "endpoint_url_recorded": false
+  },
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_native_payload_recorded": false,
+    "private_path_recorded": false,
+    "endpoint_url_recorded": false,
+    "real_hostname_recorded": false,
+    "credentials_recorded": false
+  }
+}

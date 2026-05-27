@@ -1,0 +1,49 @@
+{
+  "change": "pd-streaming-kv-production-integration",
+  "phase": "production_lifecycle_core",
+  "result": "inconclusive",
+  "recommendation": "ready_for_source_integration",
+  "protocol_version": "pd-kv-stream/1",
+  "implemented": {
+    "production_lifecycle_core": true,
+    "backend_trait": true,
+    "chunk_planner_reused": true,
+    "manifest_validation_before_import": true,
+    "final_contiguous_gate": true,
+    "bootstrap_before_decode": true,
+    "decode_after_gate": true,
+    "cleanup_hook_called_in_local_tests": true,
+    "full_state_not_used_as_streaming_pass": true
+  },
+  "current_real_serving_behavior": {
+    "live_source_integration": false,
+    "streaming_request_result": "pre_content_service_unavailable",
+    "failure_reason": "source_integration_not_implemented",
+    "fallback_to_full_state": false
+  },
+  "not_run": {
+    "mac_pgx_processes": true,
+    "short_foreground_smoke": true,
+    "four_k_foreground_smoke": true,
+    "eight_k_foreground_smoke": true
+  },
+  "remaining": [
+    "live production split control/page channel client",
+    "production PGX source service",
+    "serving-path import_kv_page runtime integration",
+    "runtime/source capability handshake",
+    "live cancellation/timeout/channel cleanup",
+    "per-chunk live telemetry",
+    "short and 4k production serving foreground smoke"
+  ],
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_or_native_payload_recorded": false,
+    "credentials_recorded": false,
+    "private_paths_recorded": false,
+    "endpoint_urls_recorded": false,
+    "real_machine_labels_recorded": false
+  }
+}

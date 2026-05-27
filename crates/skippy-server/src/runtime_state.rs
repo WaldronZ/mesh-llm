@@ -77,6 +77,31 @@ impl RuntimeState {
         Ok(())
     }
 
+    pub fn prefill_kv_stream_chunk(
+        &mut self,
+        session_id: &str,
+        token_start: u64,
+        token_ids: &[i32],
+    ) -> Result<u64> {
+        let known_tokens = self
+            .session_token_counts
+            .get(session_id)
+            .copied()
+            .unwrap_or_default();
+        if known_tokens != token_start {
+            bail!(
+                "PD streaming KV chunk position mismatch: expected start {known_tokens}, got {token_start}"
+            );
+        }
+        let session = self.session(session_id)?;
+        session.prefill_chunk(token_ids)?;
+        self.add_session_tokens(session_id, token_ids.len() as u64);
+        self.session_token_counts
+            .get(session_id)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("missing session token count after prefill"))
+    }
+
     pub fn media_marker(&self) -> String {
         self.model.media_marker()
     }
@@ -463,6 +488,19 @@ impl RuntimeState {
         let layer_end = i32::try_from(self.model_layer_end())?;
         let session = self.session(session_id)?;
         session.export_kv_page(layer_start, layer_end, token_start, token_count)
+    }
+
+    pub fn export_kv_page_segments(
+        &mut self,
+        session_id: &str,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<Vec<RuntimeKvPage>> {
+        self.validate_export_range(session_id, token_start, token_count)?;
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        session.export_kv_page_segments(layer_start, layer_end, token_start, token_count)
     }
 
     #[allow(dead_code)]

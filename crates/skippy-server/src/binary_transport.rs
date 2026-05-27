@@ -42,11 +42,13 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 pub(crate) mod forwarding;
 mod options;
+pub(crate) mod pd_streaming_kv_source;
 mod socket;
 mod wire;
 
 pub(crate) use self::forwarding::{forwarded_stage_message, forwarded_stage_message_timed};
 pub use self::options::{parse_wire_dtype, BinaryStageOptions, EmbeddedOpenAiStageOptions};
+use self::pd_streaming_kv_source::spawn_pd_streaming_kv_source;
 use self::socket::*;
 pub(crate) use self::wire::write_stage_message_conditioned;
 pub use self::wire::WireCondition;
@@ -183,6 +185,7 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
         downstream_wire_condition,
         downstream_connect_timeout_secs,
         openai,
+        pd_streaming_kv_source,
     } = options;
     validate_config(&config, topology.as_ref())?;
     let max_inflight = config.lane_count as usize;
@@ -262,6 +265,15 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
                 eprintln!("embedded OpenAI server failed: {error:#}");
             }
         });
+    }
+    if let Some(source_options) = pd_streaming_kv_source {
+        spawn_pd_streaming_kv_source(
+            source_options,
+            config.clone(),
+            runtime.clone(),
+            telemetry.clone(),
+            shutdown.clone(),
+        );
     }
     println!(
         "skippy-server listening: binary={} stage_id={} layer_range={}..{} activation_width={} dtype={:?}",

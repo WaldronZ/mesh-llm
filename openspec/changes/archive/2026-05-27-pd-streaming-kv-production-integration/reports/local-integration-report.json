@@ -1,0 +1,47 @@
+{
+  "change": "pd-streaming-kv-production-integration",
+  "phase": "local_config_lifecycle_skeleton",
+  "result": "inconclusive",
+  "recommendation": "ready_for_lifecycle_implementation",
+  "protocol_version": "pd-kv-stream/1",
+  "implemented": {
+    "default_off_flag": "--pd-streaming-kv-handoff",
+    "control_addr_flag": "--pd-stream-control-addr",
+    "page_addr_flag": "--pd-stream-page-addr",
+    "capacity_flags": [
+      "--pd-stream-max-in-flight-chunks",
+      "--pd-stream-max-in-flight-bytes",
+      "--pd-stream-max-frame-bytes",
+      "--pd-stream-max-queue-depth"
+    ],
+    "pre_content_unavailable_skeleton": true,
+    "full_state_not_used_as_streaming_pass": true,
+    "manifest_validation_local_tests": true,
+    "sanitized_status_telemetry_skeleton": true
+  },
+  "not_run": {
+    "mac_pgx_processes": true,
+    "short_foreground_smoke": true,
+    "four_k_foreground_smoke": true,
+    "eight_k_foreground_smoke": true
+  },
+  "remaining": [
+    "live production split control/page channels",
+    "production export_kv_page/import_kv_page lifecycle",
+    "production final contiguous gate",
+    "production trim-replay-last-token bootstrap",
+    "runtime capability detection",
+    "live cleanup/cancel/timeout hardening",
+    "short and 4k production serving foreground smoke"
+  ],
+  "privacy": {
+    "prompt_text_recorded": false,
+    "generated_content_recorded": false,
+    "full_token_array_recorded": false,
+    "kv_or_native_payload_recorded": false,
+    "credentials_recorded": false,
+    "private_paths_recorded": false,
+    "endpoint_urls_recorded": false,
+    "real_machine_labels_recorded": false
+  }
+}
